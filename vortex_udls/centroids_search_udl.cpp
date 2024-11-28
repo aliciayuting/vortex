@@ -143,9 +143,8 @@ void CentroidsSearchOCDPO::ProcessBatchedTasksThread::process_task(std::unique_p
 
 
 void CentroidsSearchOCDPO::ProcessBatchedTasksThread::main_loop(DefaultCascadeContextType* typed_ctxt) {
-    std::unique_lock<std::mutex> lock(parent->active_tasks_mutex, std::defer_lock);
     while (running) {
-        lock.lock();
+        std::unique_lock<std::mutex> lock(parent->active_tasks_mutex);
         parent->active_tasks_cv.wait(lock, [&] { 
             return parent->new_request || !parent->active_tasks_queue.empty() || !running; 
         });
@@ -154,8 +153,8 @@ void CentroidsSearchOCDPO::ProcessBatchedTasksThread::main_loop(DefaultCascadeCo
         std::unique_ptr<batchedTask> task = std::move(parent->active_tasks_queue.front());
         parent->active_tasks_queue.pop();
         lock.unlock();
-        if (!task) {
-            std::cout << "Error: [CentroidsSearchOCDPO] task is nullptr" << std::endl;
+        if (!task || task->blob.size == 0) {
+            std::cerr << "Error: [CentroidsSearchOCDPO] task is nullptr or blob size is 0" << std::endl;
             continue;
         }
         this->process_task(std::move(task), typed_ctxt);
@@ -212,7 +211,6 @@ void CentroidsSearchOCDPO::ocdpo_handler(const node_id_t sender,
     // Append the batched queries task to the queue
     new_request = true;
     std::unique_lock<std::mutex> lock(active_tasks_mutex); 
-
     active_tasks_queue.push(std::make_unique<batchedTask>(key_string, client_id, query_batch_id, object.blob));
     new_request = false;
     lock.unlock();
