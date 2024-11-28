@@ -151,20 +151,11 @@ void CentroidsSearchOCDPO::ProcessBatchedTasksThread::main_loop(DefaultCascadeCo
         if (!running)
             break;
         if (parent->active_tasks_queue.empty()) {
-            std::cerr << "Error: [CentroidsSearchOCDPO] active_tasks_queue is empty" << std::endl;
             continue;
         }
         std::unique_ptr<batchedTask> task = std::move(parent->active_tasks_queue.front());
         parent->active_tasks_queue.pop();
         lock.unlock();
-        if (!task){
-            std::cerr << "Error: [CentroidsSearchOCDPO] task is nullptr" << std::endl;
-            continue;
-        }
-        if (task->blob.size == 0) {
-            std::cerr << "Error: [CentroidsSearchOCDPO] task blob size is 0" << std::endl;
-            continue;
-        }
         this->process_task(std::move(task), typed_ctxt);
         // std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
