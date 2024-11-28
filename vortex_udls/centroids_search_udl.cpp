@@ -154,6 +154,10 @@ void CentroidsSearchOCDPO::ProcessBatchedTasksThread::main_loop(DefaultCascadeCo
         std::unique_ptr<batchedTask> task = std::move(parent->active_tasks_queue.front());
         parent->active_tasks_queue.pop();
         lock.unlock();
+        if (!task) {
+            std::cout << "Error: [CentroidsSearchOCDPO] task is nullptr" << std::endl;
+            continue;
+        }
         this->process_task(std::move(task), typed_ctxt);
         // std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
