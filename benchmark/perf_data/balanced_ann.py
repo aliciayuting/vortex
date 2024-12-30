@@ -1,25 +1,13 @@
 import numpy as np
 import subprocess
-import argparse
 import os
 import struct
 import sys
 from collections import Counter
 import pickle
+from process_utils import *
 
 
-def check_and_clean_folder(data_dir):
-    # Check if 'gist_base.fvecs' exists in the directory
-    gist_base_fvecs_path = os.path.join(data_dir, 'gist_base.fvecs')
-    if not os.path.isfile(gist_base_fvecs_path):
-        print(f"Error: 'gist_base.fvecs' not found in {data_dir}.")
-        return
-    # Clean the directory of all files except '.fvec' file
-    for filename in os.listdir(data_dir):
-        file_path = os.path.join(data_dir, filename)
-        if os.path.isfile(file_path) and not filename.endswith('.fvecs'):
-            os.remove(file_path)  
-            print(f"Removed: {file_path}")
 
 def fvecs_to_fbin_with_metadata(gist_data_directory):
     input_file = os.path.join(gist_data_directory, 'gist_base.fvecs')
@@ -85,10 +73,13 @@ def read_embeddings(embeddings_path):
         return embeddings, n, d
 
 
-def write_cluster_embeddings(cluster_id, embeddings, partition_result, output_dir):
-    cluster_embeddings = embeddings[partition_result == cluster_id]
+def gpann_write_cluster_embeddings(cluster_id, embeddings, partition_result, output_dir):
+    
     cluster_filepath_dat = os.path.join(output_dir, f'cluster_{cluster_id}.dat')
     cluster_filepath_pkl = os.path.join(output_dir, f'cluster_{cluster_id}.pkl')
+    # 1. Write cluster embeddings to files
+    cluster_embeddings = embeddings[partition_result == cluster_id]
+    n = cluster_embeddings.shape[0]
     # Write the selected embeddings to a binary .dat file
     with open(cluster_filepath_dat, 'wb') as f:
         n = cluster_embeddings.shape[0]
@@ -103,8 +94,18 @@ def write_cluster_embeddings(cluster_id, embeddings, partition_result, output_di
         pickle.dump(cluster_embeddings, f)
     print(f"Cluster {cluster_id} saved to {cluster_filepath_pkl} with {n} points.")
 
+    # 2. Write cluster emb ID to embedding ID mapping
+    doc_emb_map = defaultdict(dict)
+    for emb_id, emb in enumerate(cluster_embeddings):
+        doc_id = np.where(partition_result == cluster_id)[0][emb_id]
+        doc_emb_map[cluster_id][emb_id] = doc_id
 
-def process_cluster_results(data_dir):
+    doc_emb_map_path = os.path.join(output_dir, 'doc_emb_map.pkl')
+    with open(doc_emb_map_path, 'wb') as f:
+        pickle.dump(doc_emb_map, f)
+    print(f"cluster embID to embedding ID map saved to {doc_emb_map_path}")
+
+def gpann_process_cluster_results(data_dir, ncentroids):
     partition_filepath = os.path.join(data_dir, 'gist.partition.dat')
     embeddings_path = os.path.join(data_dir, 'gist_base.fbin')
     output_dir = data_dir
@@ -115,9 +116,10 @@ def process_cluster_results(data_dir):
     embeddings, _, _ = read_embeddings(embeddings_path)
     print(f"Loaded {embeddings.shape[0]} embeddings with {embeddings.shape[1]} dimensions.")
     # Write cluster embeddings to files
-    centroid_counts = Counter(partition_result)
-    for centroid in centroid_counts.keys():
-        write_cluster_embeddings(centroid, embeddings, partition_result, output_dir)
+    I = np.array(partition_result).reshape(-1, 1)
+    write_cluster_embeddings(I, embeddings, ncentroids, output_dir)
+    # for centroid in centroid_counts.keys():
+    #     gpann_write_cluster_embeddings(centroid, embeddings, partition_result, output_dir)
 
 
 def load_centroids(filepath):
@@ -137,31 +139,47 @@ def save_centroids_to_pkl(centroids, filedir):
     print(f"Centroids saved to {filepath}")
 
 
-def process_centroid_results(data_dir):
+def gpann_process_centroid_results(data_dir):
     centroid_path = os.path.join(data_dir, "gist.partition_centroids.dat")
     centroids, n, d = load_centroids(centroid_path)
     print(f"Loaded {n} centroids with {d} dimensions.")
     save_centroids_to_pkl(centroids, data_dir)
 
 
-
-def main():
-    parser = argparse.ArgumentParser(description='Run Partition command with custom directories.')
-    parser.add_argument('gp_ann_directory', type=str, help='Directory containing the gp_ann code (e.g., ../gp_ann)')
-    parser.add_argument('gist_directory', type=str, help='Directory containing the gist files (e.g., ../gist)')
-    parser.add_argument('--num_clusters', type=int, default=10, help='Number of clusters (default: 10)')
-    args = parser.parse_args()
-
-    check_and_clean_folder(args.gist_directory)
+def gp_ann_cluster(args):
+    data_dir = args.embeddings_loc
 
     # 1. Convert gist_base.fvecs to gist_base.fbin
-    fvecs_to_fbin_with_metadata(args.gist_directory)
+    fvecs_to_fbin_with_metadata(data_dir)
     # 2. Run Balanced KMeans
-    run_balanced_knn(args.gp_ann_directory, args.gist_directory, args.num_clusters)
+    run_balanced_knn(args.gp_ann_loc, data_dir, args.ncentroids)
     # 3. write results to pkls
-    process_cluster_results(args.gist_directory)
-    process_centroid_results(args.gist_directory)
+    gpann_process_cluster_results(data_dir, args.ncentroids)
+    gpann_process_centroid_results(data_dir)
+    write_query_results(data_dir)
 
 
-if __name__ == "__main__":
-    main()
+# def gp_ann_cluster():
+#     parser = argparse.ArgumentParser(description='Run Partition command with custom directories.')
+#     parser.add_argument('--gp_ann_loc', type=str, help='Directory containing the gp_ann code (e.g., ../gp_ann)')
+#     parser.add_argument('--embeddings_loc', type=str, default='./gist', help='Directory to save embeddings and related files(default: ./gist)')
+#     parser.add_argument('--ncentroids', type=int, default=3, help='Number of centroids for KMeans clustering(default: 3)')
+#     args = parser.parse_args()
+
+#     EMBEDDINGS_LOC = args.embeddings_loc
+#     contain_all_files = check_and_clean_folder(EMBEDDINGS_LOC)
+#     if not contain_all_files:
+#         sys.exit(1)
+
+#     # 1. Convert gist_base.fvecs to gist_base.fbin
+#     fvecs_to_fbin_with_metadata(EMBEDDINGS_LOC)
+#     # 2. Run Balanced KMeans
+#     run_balanced_knn(args.gp_ann_loc, EMBEDDINGS_LOC, args.ncentroids)
+#     # 3. write results to pkls
+#     gpann_process_cluster_results(EMBEDDINGS_LOC, args.ncentroids)
+#     gpann_process_centroid_results(EMBEDDINGS_LOC)
+#     write_query_results(EMBEDDINGS_LOC)
+
+# if __name__ == "__main__":
+
+#     gp_ann_cluster()
