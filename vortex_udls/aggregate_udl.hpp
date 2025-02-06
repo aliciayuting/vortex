@@ -19,6 +19,10 @@ namespace cascade {
 #define MY_UUID "11a3c123-3300-31ac-1866-0003ac330000"
 #define MY_DESC "UDL to aggregate the knn search results for each query from the clusters and run LLM with the query and its top_k closest docs."
 
+#define NOTIFY_CLIENT_PREFIX "/rag/results"
+#define EMIT_DOCRETRIEVAL_PREFIX "/rag/generate/doc"
+// #define DOCRETRIEVAL_SUBGROUP_INDEX 2
+
 std::string get_uuid() {
     return MY_UUID;
 }
@@ -87,6 +91,7 @@ private:
     int batch_time_us = 100;
     int my_id;
     uint64_t num_threads = 1; // number of threads to process the cluster search results
+    bool notify_client = true; // notify client at the aggregate results
 
     virtual void ocdpo_handler(const node_id_t sender,
                                const std::string& object_pool_pathname,
@@ -156,4 +161,3 @@ void release(ICascadeContext* ctxt) {
 
 }  // namespace cascade
 }  // namespace derecho
-

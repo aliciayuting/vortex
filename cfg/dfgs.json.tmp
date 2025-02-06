@@ -59,7 +59,8 @@
                         "batch_time_us":1000,
                         "min_batch_size":1,
                         "max_batch_size":100,
-                        "num_threads": 1
+                        "num_threads": 1,
+                        "notify_client":true
                 }],
                 "destinations": [{}]
             }

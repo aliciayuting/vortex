@@ -159,13 +159,22 @@ void AggGenOCDPO::BatchingThread::main_loop(DefaultCascadeContextType* typed_ctx
                 batcher.serialize();
 
                 // notify client
-                try {
-                    std::string notification_pathname = "/rag/results/" + std::to_string(item.first);
-                    typed_ctxt->get_service_client_ref().notify(*(batcher.get_blob()),notification_pathname,item.first);
-                    dbg_default_trace("[AggregateGenUDL] echo back to node {}", item.first);
-                } catch (derecho::derecho_exception& ex) {
-                    std::cerr << "[AGGnotification ocdpo]: exception on notification:" << ex.what() << std::endl;
-                    dbg_default_error("[AGGnotification ocdpo]: exception on notification:{}", ex.what());
+                if (parent-> notify_client) {
+                    try {
+                        std::string notification_pathname = NOTIFY_CLIENT_PREFIX "/" + std::to_string(item.first);
+                        typed_ctxt->get_service_client_ref().notify(*(batcher.get_blob()),notification_pathname,item.first);
+                        dbg_default_trace("[AggregateGenUDL] echo back to node {}", item.first);
+                    } catch (derecho::derecho_exception& ex) {
+                        std::cerr << "[AGGnotification ocdpo]: exception on notification:" << ex.what() << std::endl;
+                        dbg_default_error("[AGGnotification ocdpo]: exception on notification:{}", ex.what());
+                    }
+                } else {
+                    ObjectWithStringKey obj;
+                    int front_query_id = batcher.get_front_query_id(); // use the first query id as the id for the object
+                    obj.key = EMIT_DOCRETRIEVAL_PREFIX + std::to_string(parent->my_id) + "_" + std::to_string(front_query_id);
+                    obj.blob = std::move(*batcher.get_blob());
+
+                    typed_ctxt->get_service_client_ref().put_and_forget(obj, true); // use HASH scheme to distribute
                 }
 
                 num_sent += batch_size;
@@ -227,10 +236,11 @@ void AggGenOCDPO::set_config(DefaultCascadeContextType* typed_ctxt, const nlohma
         if (config.contains("min_batch_size")) this->min_batch_size = config["min_batch_size"].get<int>();
         if (config.contains("max_batch_size")) this->max_batch_size = config["max_batch_size"].get<int>();
         if (config.contains("num_threads")) this->num_threads = config["num_threads"].get<int>();
+        if (config.contains("notify_client")) this->notify_client = config["notify_client"].get<bool>();
     } catch (const std::exception& e) {
-        std::cerr << "Error: failed to convert top_num_centroids, top_k, include_llm, or retrieve_docs from config" << std::endl;
-        dbg_default_error("Failed to convert top_num_centroids, top_k, include_llm, or retrieve_docs from config, at clusters_search_udl.");
-    } 
+        std::cerr << "Error: failed to convert top_num_centroids, final_top_k, batch_time_us, min_batch_size, max_batch_size, num_threads, notify_client from config, at clusters_search_udl." << std::endl;
+        dbg_default_error("Failed to convert top_num_centroids, final_top_k, batch_time_us, min_batch_size, max_batch_size, num_threads, notify_client from config, at clusters_search_udl.");
+    }
     this->start_threads(typed_ctxt);
 }  
 

@@ -600,6 +600,13 @@ void ClientNotificationBatcher::add_aggregate(std::unique_ptr<ClusterSearchResul
     aggregates.push_back(std::move(aggregate));
 }
 
+int ClientNotificationBatcher::get_front_query_id(){
+    if (aggregates.empty()) {
+        return -1;
+    }
+    return aggregates.front()->get_query_id();
+}
+
 // format: num_aggregates,top_k | {query_id} | {doc_ids} | {dist}
 void ClientNotificationBatcher::serialize(){
     num_aggregates = aggregates.size();

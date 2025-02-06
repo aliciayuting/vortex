@@ -259,6 +259,7 @@ public:
     void add_aggregate(std::unique_ptr<ClusterSearchResultsAggregate> aggregate);
 
     std::shared_ptr<derecho::cascade::Blob> get_blob();
+    int get_front_query_id();
 
     void serialize();
     void reset();
