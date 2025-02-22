@@ -6,7 +6,7 @@ import warnings
 import numpy as np
 
 from typing import Any
-from FlagEmbedding import BGEM3FlagModel
+from FlagEmbedding import FlagModel
 
 import cascade_context #type: ignore
 from derecho.cascade.udl import UserDefinedLogic
@@ -30,11 +30,7 @@ class EncodeUDL(UserDefinedLogic):
         if self._encoder is None:
             # load encoder when we need it to prevent overloading
             # the hardware during startup
-            self._encoder = BGEM3FlagModel(
-                model_name_or_path=self._conf["encoder_config"]["model"],
-                device=self._conf["encoder_config"]["device"],
-                use_fp16=False,
-            )
+            self._encoder = FlagModel('BAAI/bge-small-en-v1.5', devices="cuda:0")
         message_id = kwargs["message_id"]
         # TODO: this logging only works for batch of 1
         self._tl.log(10001, message_id, 0, 0)
@@ -43,15 +39,12 @@ class EncodeUDL(UserDefinedLogic):
         
         self._batch.deserialize(data)
         
-        res: Any = self._encoder.encode(
-            self._batch.query_list,
-            return_dense=True,
-            return_sparse=False,
-            return_colbert_vecs=False,
+        query_embeddings: np.ndarray = self._encoder.encode(
+            self._batch.query_list
         )
-        query_embeddings: np.ndarray = res["dense_vecs"]
+        
         self._batch_id += 1
-
+        
 
         # format should be {client}_{batch_id}
         key_str = kwargs["key"]
