@@ -13,7 +13,7 @@
 
 using namespace derecho::cascade;
 
-#define UDL1_PATH "/rag/emb/encode_search"
+#define UDL1_PATH "/rag/emb/encode"
 #define UDL2_PATH "/rag/emb/centroids_search"
 #define UDL3_PATH "/rag/emb/clusters_search"
 #define UDL4_PATH "/rag/generate/agg"
@@ -71,7 +71,7 @@ int main() {
         {30 ,std::make_shared<std::string>("SUPER LONG MESSAGE kjsdjflkasfj;asdkljf;klasdfj;aosdklfj;asdlkfjl;asdkfjl;asdfjk;asldkfj;asldkfjasl;dfjkl;asdkfjl;asdkfjl;askdfjl;aksdjfl;adksjfl;asdkjf;alskdfj;lakdjf;")},
     };
 
-    EncoderQueryBatcher batcher(384, queries.size());
+    EncoderQueryBatcher batcher(queries.size());
 
     for(const auto& query : queries) {
         batcher.add_query(

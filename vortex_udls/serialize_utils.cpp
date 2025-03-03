@@ -850,7 +850,7 @@ std::priority_queue<std::string, std::vector<std::string>, CompareObjKey> filter
 ///
 ///
 
-EncoderQueryBatcher::EncoderQueryBatcher(uint32_t emb_dim, uint64_t size_hint): _emb_size(static_cast<uint32_t>(emb_dim * sizeof(float))) {
+EncoderQueryBatcher::EncoderQueryBatcher(uint64_t size_hint) {
     _queries.reserve(size_hint);
 } 
 
@@ -897,19 +897,15 @@ void EncoderQueryBatcher::serialize() {
         const uint32_t num_queries = _queries.size();
         const uint32_t metadata_position = EncoderQueryBatcher::HEADER_SIZE;
         const uint32_t text_position = metadata_position + (num_queries * EncoderQueryBatcher::METADATA_SIZE);
-        const uint32_t embeddings_position = text_position + _total_text_size;
-
-        const uint32_t header[2] = {num_queries, embeddings_position};
+        const uint32_t header = num_queries;
         static_assert(EncoderQueryBatcher::HEADER_SIZE == sizeof(header));
 
         // write the header
-        std::memcpy(buffer, header, EncoderQueryBatcher::HEADER_SIZE);
+        std::memcpy(buffer, &header, EncoderQueryBatcher::HEADER_SIZE);
 
         // write each query to the buffer
         uint32_t metadata_ptr_offset = metadata_position;
         uint32_t text_ptr_offset = text_position;
-        uint32_t embedding_ptr_offset = embeddings_position;
-
 
         for(const auto& query : _queries) {
             const query_id_t& query_id = std::get<0>(query);
@@ -918,8 +914,7 @@ void EncoderQueryBatcher::serialize() {
             const uint32_t& text_len = _text_size_mapping[query_id];
 
             // write metadata: query_id, {client_id, query_text_position, query_text_size, embeddings_position, query_emb_size}
-            std::cout << client_id << " " << text_ptr_offset << " " << text_len << " " << embedding_ptr_offset << " " << _emb_size << std::endl;
-            uint32_t metadata_array[5] = {client_id, text_ptr_offset, text_len, embedding_ptr_offset, _emb_size};
+            uint32_t metadata_array[3] = {client_id, text_ptr_offset, text_len};
             static_assert(EncoderQueryBatcher::METADATA_SIZE == sizeof(metadata_array) + sizeof(query_id_t));
 
             std::memcpy(buffer + metadata_ptr_offset, &query_id, sizeof(query_id_t));
@@ -931,7 +926,6 @@ void EncoderQueryBatcher::serialize() {
             // update offsets
             metadata_ptr_offset += EncoderQueryBatcher::METADATA_SIZE;
             text_ptr_offset += text_len;
-            embedding_ptr_offset += _emb_size;
         } 
         return size;
     }, _total_obj_size);

@@ -15,7 +15,7 @@
                         "entry_class":"EncodeUDL",
                         "encoder_config": {
                             "model": "BAAI/bge-small-en-v1.5",
-                            "device": "cuda"
+                            "device": "cuda:0"
                         }
                     }],
                 "destinations": [{"/rag/emb/centroids_search":"put"}]

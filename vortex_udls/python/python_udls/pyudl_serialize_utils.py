@@ -11,61 +11,141 @@ def utf8_length(s: str) -> int:
 
 
 class Batch:
-    def __init__(self):
+    def __init__(self,
+                 strings: list[str] | None = None,
+                 query_id: list[int] | None = None,
+                 client_id: list[int] | None = None
+                 ):
         self._bytes: np.ndarray = np.ndarray(shape=(0, ), dtype=np.uint8)
-        self._strings: list[str] = []
-        self._client_id: int = 0
+        self._strings: list[str] = strings if strings else []
+        self._query_id: list[int] = query_id if query_id else []
+        self._client_id: list[int] = client_id if client_id else []
+        self._embeddings: np.ndarray | None = None
     
     @property
     def query_list(self):
         return self._strings
+
+    @property 
+    def query_id_list(self):
+        return self._query_id
     
     @property
-    def client_id(self):
+    def client_id_list(self):
         return self._client_id
+    
+    @property
+    def size(self):
+        return len(self._strings)
 
     def deserialize(self, data: np.ndarray):
         self._bytes = data
 
         # structured dtype
+        metadata_type = np.dtype([
+            ('query_id', np.uint64),
+            ('client_id', np.uint32),
+            ('text_position', np.uint32),
+            ('text_length', np.uint32),
+        ])
+
+        header_start = 0
+        header_end = header_start + 4
+        count = data[header_start:header_end].view(np.uint32)[0]
+
+        metadata_start = 4
+        metadata_end = metadata_type.itemsize * count + metadata_start
+        self._strings = [""] * count
+        self._query_id = [0] * count
+        self._client_id = [0] * count
+
+        for idx, m in enumerate(data[metadata_start:metadata_end].view(metadata_type)):
+            string_start = m[2]
+            string_length = m[3]
+            string = data[string_start:string_start+string_length].tobytes().decode("utf-8")
+
+            self._strings[idx] = string
+            self._query_id[idx] = m[0]
+            self._client_id[idx] = m[1]
+
+    def add_embeddings(self, embeddings: np.ndarray):
+        self._embeddings = embeddings
+
+    def serialize(self) -> np.ndarray:
+        assert self._embeddings is not None, "please add embeddings before calling serialize"
+        print(self._embeddings.dtype)
+        assert self._embeddings.dtype == np.float32, "embedding type is not float32"
+        assert self._embeddings.shape[0] == self.size, "mismatched number of embeddings"
+
+        num_emb, emb_dim = self._embeddings.shape
+
         header_type = np.dtype([
             ('count', np.uint32),
-            ('embeddings_start', np.uint32)
+            ('embeddings_position', np.uint32)
         ])
+
         metadata_type = np.dtype([
             ('query_id', np.uint64),
             ('client_id', np.uint32),
             ('text_position', np.uint32),
             ('text_length', np.uint32),
             ('embeddings_position', np.uint32),
-            ('embeddings_dim', np.uint32),
+            ('query_emb_size', np.uint32),
         ])
 
-        header_start = 0
-        header_end = header_start + header_type.itemsize
-        (count, _) = data[header_start:header_end].view(header_type)[0]
+        encoded_texts = [s.encode("utf-8") for s in self._strings]
+        total_text_size = sum(len(t) for t in encoded_texts)
+        total_emb_size = self._embeddings.itemsize * emb_dim * num_emb
+        emb_bytes = self._embeddings.itemsize * emb_dim
+        
 
-        metadata_start = 8
-        metadata_end = metadata_type.itemsize * count + metadata_start
-        self._strings = [""] * count
+        header_size = header_type.itemsize
+        metadata_size = self.size * metadata_type.itemsize
+        total_size = header_size + metadata_size + total_text_size + total_emb_size
 
-        # get one record to grab client id
-        # saves on bne in loop
-        metadata_record = data[metadata_start:metadata_start + metadata_type.itemsize].view(metadata_type)[0]
-        self._client_id = metadata_record[1]
+        metadata_position = header_size
+        text_position = metadata_position + metadata_size
+        embedding_position = text_position + total_text_size
 
-        for idx, m in enumerate(data[metadata_start:metadata_end].view(metadata_type)):
-            string_start = m[2]
-            string_length = m[3]
-            string = data[string_start:string_start+string_length].tobytes().decode("utf-8")
-            self._strings[idx] = string
+        # Allocate buffer
+        
+        print("total size:", total_size)
+        buffer = np.zeros(total_size, dtype=np.uint8)
+
+        # **Step 1: Write header**
+        np.frombuffer(buffer[:header_size], dtype=header_type)[0] = (self.size, embedding_position)
+        
 
 
-    def serialize(self, embeddings: np.ndarray) -> np.ndarray:
+        # **Step 2: Write responses directly into the buffer while encoding**
+        metadata_view = np.frombuffer(buffer[metadata_position:metadata_position + metadata_size], dtype=metadata_type)
+        text_ptr_offset = text_position
+        embeddings_ptr_offset = embedding_position
+
+        for i in range(self.size):
+            text_len = len(encoded_texts[i])
+
+            metadata_view[i] = (
+                self._query_id[i],
+                self._client_id[i],
+                text_ptr_offset,
+                text_len,
+                embeddings_ptr_offset,
+                emb_bytes
+            )
+
+            buffer[text_ptr_offset:text_ptr_offset+text_len] =  np.frombuffer(encoded_texts[i], dtype=np.uint8)
+
+            text_ptr_offset += text_len
+            embeddings_ptr_offset += emb_bytes
+
         # lesson learned
         # do not use .astype as that is a cast on each element of the array
         # use .view, which is simular to C++'s reinterpret_cast
-        return np.concatenate((self._bytes, embeddings.flatten().view(np.uint8)))
+        print("embedding position", embedding_position)
+        print("total emb size", total_emb_size)
+        buffer[embedding_position:] = self._embeddings.flatten().view(np.uint8)
+        return buffer
 
 
 class AggregateResultBatch:
