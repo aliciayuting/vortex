@@ -1,6 +1,10 @@
+/rag/emb/encode VCSS 5 cluster[0-9]+
 /rag/emb/centroids_obj VCSS 0 cluster[0-9]+
 /rag/emb/centroids_search VCSS 0 cluster[0-9]+
 /rag/emb/clusters VCSS 1 cluster[0-9]+
 /rag/emb/clusters_search VCSS 1 cluster[0-9]+
-/rag/generate VCSS 2 _cluster[0-9a-fA-F]+
+/rag/generate/agg VCSS 2 _cluster[0-9a-fA-F]+
+/rag/generate/doc VCSS 3 
+/rag/generate/check VCSS 4 
+/rag/generate/speech VCSS 5 
 /rag/doc PCSS 0

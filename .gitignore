@@ -1,12 +1,12 @@
 *.pickle
-*.tar
-*.tar.*
+*.tar *.tar.*
 *.zip
 
 # Ignore dataset for vector database
 **/gist/
 **/miniset/
 **/hotpot15/
+**/msmarco/
 
 # Ignore VS Code settings and extensions
 .vscode/

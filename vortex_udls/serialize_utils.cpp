@@ -62,7 +62,7 @@ void EmbeddingQueryBatcher::serialize_from_buffered(){
             uint32_t metadata_position = header_size; // position to start writing metadata
             uint32_t text_position = metadata_position + (num_queries * metadata_size); // position to start writing the query texts
             uint32_t embeddings_position = text_position + total_text_size; // position to start writing the embeddings
-            
+
             // write header
             uint32_t header[2] = {num_queries,embeddings_position};
             std::memcpy(buffer,header,header_size);
@@ -228,7 +228,7 @@ EmbeddingQueryBatchManager::EmbeddingQueryBatchManager(const uint8_t *buffer,uin
     this->header_size = sizeof(uint32_t) * 2;
     this->metadata_size = sizeof(uint32_t) * 5 + sizeof(query_id_t);
     this->embeddings_size = buffer_size - this->embeddings_position;
-   
+
     if(copy_embeddings){
         this->buffer_size = buffer_size;
     } else {
@@ -600,6 +600,13 @@ void ClientNotificationBatcher::add_aggregate(std::unique_ptr<ClusterSearchResul
     aggregates.push_back(std::move(aggregate));
 }
 
+int ClientNotificationBatcher::get_front_query_id(){
+    if (aggregates.empty()) {
+        return -1;
+    }
+    return aggregates.front()->get_query_id();
+}
+
 // format: num_aggregates,top_k | {query_id} | {doc_ids} | {dist}
 void ClientNotificationBatcher::serialize(){
     num_aggregates = aggregates.size();
@@ -613,7 +620,7 @@ void ClientNotificationBatcher::serialize(){
             uint32_t query_ids_position = header_size;
             uint32_t doc_ids_position = query_ids_position + (query_ids_size * num_aggregates);
             uint32_t dist_position = doc_ids_position + (num_aggregates * doc_ids_size);
-            
+
             // write header
             uint32_t header[2] = {num_aggregates,top_k};
             std::memcpy(buffer,header,header_size);
@@ -642,6 +649,62 @@ void ClientNotificationBatcher::serialize(){
                 query_ids_position += query_ids_size;
                 doc_ids_position += doc_ids_size;
                 dist_position += dist_size;
+            }
+
+            return size;
+        },total_size);
+}
+
+// format: num_aggregates,top_k | {query_id,client_id,text_position,text_size,doc_ids_position,doc_ids_size} | {query_text} | {doc_ids_array} 
+// serialization similar to ClusterSearchResultBatcher
+void ClientNotificationBatcher::serialize_for_doc_retrieval(){
+    num_aggregates = aggregates.size();
+    metadata_size = sizeof(query_id_t) + sizeof(uint32_t) * 5;
+    total_text_size = 0;
+    uint32_t total_size = header_size; // header: num_aggregates,top_k
+
+    // compute the number of bytes each result will take in the buffer
+    for(auto& res : aggregates){
+        query_id_t query_id = res->get_query_id();
+        uint32_t query_text_size = res->get_text_size();
+        total_size += metadata_size + query_text_size + doc_ids_size;
+        total_text_size += query_text_size;
+        text_size[query_id] = query_text_size;
+    }
+
+    // use a lambda to build buffer, to avoid a copy
+    blob = std::make_shared<derecho::cascade::Blob>([&](uint8_t* buffer,const std::size_t size){
+            uint32_t metadata_position = header_size; // position to start writing metadata
+            uint32_t text_position = metadata_position + (num_aggregates * metadata_size); // position to start writing the query texts
+            uint32_t doc_ids_position = text_position + total_text_size; // position to start writing the IDs
+            
+            // write header
+            uint32_t header[2] = {num_aggregates,top_k};
+            std::memcpy(buffer,header,header_size);
+            
+            // write each result to the buffer
+            for(auto& agg : aggregates){
+                query_id_t query_id = agg->get_query_id();
+                uint32_t node_id = agg->get_client_id(); 
+                const long * res_ids = agg->get_ids().data();
+                const uint8_t * text_data = agg->get_text_pointer();
+                uint32_t res_text_size = text_size[query_id];
+
+                // write metadata: query_id, node_id, text_position, res_text_size, doc_ids_position, doc_ids_size, dist_position, dist_size
+                uint32_t metadata_array[5] = {node_id,text_position,res_text_size,doc_ids_position,doc_ids_size};
+                std::memcpy(buffer+metadata_position,&query_id,sizeof(query_id_t));
+                std::memcpy(buffer+metadata_position+sizeof(query_id_t),metadata_array,metadata_size-sizeof(query_id_t));
+
+                // write ids
+                std::memcpy(buffer+doc_ids_position,res_ids,doc_ids_size);
+
+                // write text
+                std::memcpy(buffer+text_position,text_data,res_text_size);
+               
+                // update position for the next 
+                metadata_position += metadata_size;
+                text_position += res_text_size;
+                doc_ids_position += doc_ids_size;
             }
 
             return size;
@@ -782,3 +845,88 @@ std::priority_queue<std::string, std::vector<std::string>, CompareObjKey> filter
      return filtered_keys;
 }
 
+/// ENCODER QUERY BATCHER IMPL
+///
+///
+///
+
+EncoderQueryBatcher::EncoderQueryBatcher(uint64_t size_hint) {
+    _queries.reserve(size_hint);
+} 
+
+void EncoderQueryBatcher::add_query(const encoder_query_t &query) {
+   _queries.emplace_back(query);
+}
+
+void EncoderQueryBatcher::add_query(query_id_t query_id, uint32_t node_id, std::shared_ptr<std::string> query_text) {
+    encoder_query_t encoder_query {query_id, node_id, query_text};
+    add_query(encoder_query);
+}
+
+std::shared_ptr<derecho::cascade::Blob> EncoderQueryBatcher::get_blob() const{
+    return _blob_repr;
+}
+
+void EncoderQueryBatcher::reset() {
+    _blob_repr.reset();
+    _queries.clear();
+}
+
+void EncoderQueryBatcher::serialize() {
+    // compute number of bytes to serialize all strings 
+    _total_text_size = 0;
+    _total_obj_size = EncoderQueryBatcher::HEADER_SIZE + EncoderQueryBatcher::METADATA_SIZE * _queries.size();
+
+    for(const auto& query : _queries) {
+        const query_id_t& query_id = std::get<0>(query);
+        const std::string& query_text = *std::get<2>(query);
+
+        uint32_t query_text_size = mutils::bytes_size(query_text);
+
+        _total_text_size += query_text_size;
+        _total_obj_size += query_text_size;
+        // std::cout << _total_text_size << std::endl; std::cout << _total_obj_size << std::endl << std::endl;
+
+        _text_size_mapping[query_id] = query_text_size;
+    }
+
+    // use blob generator constructor
+    // std::cout << "total size: " << _total_text_size << std::endl;
+    _blob_repr = std::make_shared<derecho::cascade::Blob>([&](uint8_t* buffer, const size_t size){
+        // std::cout << "total size: " << _total_text_size << std::endl;
+        const uint32_t num_queries = _queries.size();
+        const uint32_t metadata_position = EncoderQueryBatcher::HEADER_SIZE;
+        const uint32_t text_position = metadata_position + (num_queries * EncoderQueryBatcher::METADATA_SIZE);
+        const uint32_t header = num_queries;
+        static_assert(EncoderQueryBatcher::HEADER_SIZE == sizeof(header));
+
+        // write the header
+        std::memcpy(buffer, &header, EncoderQueryBatcher::HEADER_SIZE);
+
+        // write each query to the buffer
+        uint32_t metadata_ptr_offset = metadata_position;
+        uint32_t text_ptr_offset = text_position;
+
+        for(const auto& query : _queries) {
+            const query_id_t& query_id = std::get<0>(query);
+            const uint32_t& client_id = std::get<1>(query);
+            const char* text_ptr = std::get<2>(query)->c_str();
+            const uint32_t& text_len = _text_size_mapping[query_id];
+
+            // write metadata: query_id, {client_id, query_text_position, query_text_size, embeddings_position, query_emb_size}
+            uint32_t metadata_array[3] = {client_id, text_ptr_offset, text_len};
+            static_assert(EncoderQueryBatcher::METADATA_SIZE == sizeof(metadata_array) + sizeof(query_id_t));
+
+            std::memcpy(buffer + metadata_ptr_offset, &query_id, sizeof(query_id_t));
+            std::memcpy(buffer + metadata_ptr_offset + sizeof(query_id_t), metadata_array, sizeof(metadata_array));
+            
+            // write text
+            std::memcpy(buffer + text_ptr_offset, text_ptr, text_len);
+
+            // update offsets
+            metadata_ptr_offset += EncoderQueryBatcher::METADATA_SIZE;
+            text_ptr_offset += text_len;
+        } 
+        return size;
+    }, _total_obj_size);
+}

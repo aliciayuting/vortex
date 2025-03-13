@@ -46,6 +46,9 @@ include_directories(
 
 
 
+add_executable(run_encoder_example benchmark/run_encoder_example.cpp vortex_udls/serialize_utils.cpp)
+target_link_libraries(run_encoder_example derecho::cascade)
+
 add_executable(start_webservice webservice/start_webservice.cpp webservice/webservice.cpp webservice/vortex_webservice.cpp webservice/cascade_client.cpp vortex_udls/serialize_utils.cpp)
 target_link_libraries(start_webservice ${Boost_LIBRARIES} derecho::cascade)
 
@@ -135,12 +138,12 @@ add_custom_command(TARGET start_webservice POST_BUILD
         ${CMAKE_CURRENT_BINARY_DIR}/cfg/n3/setup
     COMMAND ln -sf ${CMAKE_CURRENT_BINARY_DIR}/benchmark/setup
         ${CMAKE_CURRENT_BINARY_DIR}/cfg/n4/setup
-    # COMMAND ln -sf ${CMAKE_CURRENT_BINARY_DIR}/benchmark/pipeline_client
-    #     ${CMAKE_CURRENT_BINARY_DIR}/cfg/n2/pipeline_client
-    # COMMAND ln -sf ${CMAKE_CURRENT_BINARY_DIR}/benchmark/pipeline_client
-    #     ${CMAKE_CURRENT_BINARY_DIR}/cfg/n3/pipeline_client
-    # COMMAND ln -sf ${CMAKE_CURRENT_BINARY_DIR}/benchmark/pipeline_client
-    #     ${CMAKE_CURRENT_BINARY_DIR}/cfg/n4/pipeline_client
+    COMMAND ln -sf ${CMAKE_CURRENT_BINARY_DIR}/benchmark/pipeline_client
+        ${CMAKE_CURRENT_BINARY_DIR}/cfg/n2/pipeline_client
+    COMMAND ln -sf ${CMAKE_CURRENT_BINARY_DIR}/benchmark/pipeline_client
+        ${CMAKE_CURRENT_BINARY_DIR}/cfg/n3/pipeline_client
+    COMMAND ln -sf ${CMAKE_CURRENT_BINARY_DIR}/benchmark/pipeline_client
+        ${CMAKE_CURRENT_BINARY_DIR}/cfg/n4/pipeline_client
     COMMAND ln -sf ${CMAKE_CURRENT_BINARY_DIR}/benchmark/run_benchmark
         ${CMAKE_CURRENT_BINARY_DIR}/cfg/n2/run_benchmark
     COMMAND ln -sf ${CMAKE_CURRENT_BINARY_DIR}/benchmark/run_benchmark

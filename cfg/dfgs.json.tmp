@@ -4,6 +4,26 @@
         "desc": "Vortex UDLs Dataflow graph",
         "graph": [
             {
+                "pathname": "/rag/emb/encode",
+                "shard_dispatcher_list": ["one"],
+                "user_defined_logic_list": ["6cfe8f64-3a1d-11ed-8e7e-0242ac110006"],
+                "user_defined_logic_stateful_list": ["singlethreaded"],
+                "user_defined_logic_config_list": [
+                    {
+                        "python_path":["python_udls"],
+                        "module":"encode_udl",
+                        "entry_class":"EncodeUDL",
+                        "max_queued_entries": 64,
+                        "max_batch_size": 32,
+                        "batch_time_us": 1000,
+                        "encoder_config": {
+                            "model": "BAAI/bge-small-en-v1.5",
+                            "device": "cuda:0"
+                        }
+                    }],
+                "destinations": [{"/rag/emb/centroids_search":"put"}]
+            },
+            {
                 "pathname": "/rag/emb/centroids_search",
                 "shard_dispatcher_list": ["one"],
                 "user_defined_logic_list": ["10a2c111-1100-1100-1000-0001ac110000"],
@@ -11,10 +31,10 @@
                 "user_defined_logic_config_list": [
                     {
                         "centroids_emb_prefix":"/rag/emb/centroids_obj",
-                        "emb_dim":1024,
-                        "top_num_centroids":3,
+                        "emb_dim":384,
+                        "top_num_centroids":2,
                         "faiss_search_type":0,
-                        "num_search_threads":1,
+                        "num_search_threads":5,
                         "min_batch_size":1,
                         "max_batch_size":100,
                         "batch_time_us":1000,
@@ -32,9 +52,9 @@
                 "user_defined_logic_stateful_list": ["singlethreaded"],
                 "user_defined_logic_config_list": [
                 {
-                        "emb_dim":1024,
+                        "emb_dim":384,
                         "top_k":20,
-                        "faiss_search_type":3,
+                        "faiss_search_type":1,
                         "dataset_name": "perf_data/hnsw_index/miniset",
                         "hnsw_m": 100,
                         "hnsw_ef_construction": 200,
@@ -59,8 +79,71 @@
                         "batch_time_us":1000,
                         "min_batch_size":1,
                         "max_batch_size":100,
-                        "num_threads": 1
+                        "num_threads": 1,
+                        "notify_client":false
                 }],
+                "destinations": [{"/rag/generate/doc":"put"}]
+            },
+            {
+                "pathname": "/rag/generate/doc",
+                "user_defined_logic_list": ["6cfe8f64-3a1d-11ed-8e7e-0242ac110006"],
+                "user_defined_logic_stateful_list": ["singlethreaded"],
+                "user_defined_logic_config_list": [
+                    {
+                        "python_path":["python_udls"],
+                        "module":"doc_generate_udl",
+                        "entry_class":"DocGenerateUDL",
+                        "doc_file_name":"/mydata/msmarco/msmarco_3_clusters/doc_list.pkl",
+                        "udl_conf_key1":"doc_gen_udl config key 1"
+                    }],
+                "destinations": [{"/rag/generate/check":"put", "/rag/generate/speech":"put"}]
+            },
+            {
+                "pathname": "/rag/generate/check",
+                "user_defined_logic_list": ["6cfe8f64-3a1d-11ed-8e7e-0242ac110006"],
+                "user_defined_logic_stateful_list": ["singlethreaded"],
+                "user_defined_logic_config_list": [
+                    {
+                        "python_path":["python_udls"],
+                        "module":"qa_check_udl",
+                        "entry_class":"QACheckUDL",
+                        "udl_conf_key1":"qa_check_udl config key 1"
+                    }],
+                "destinations": [{}]
+            },
+            {
+                "pathname": "/rag/generate/speech",
+                "user_defined_logic_list": ["6cfe8f64-3a1d-11ed-8e7e-0242ac110006"],
+                "user_defined_logic_stateful_list": ["singlethreaded"],
+                "user_defined_logic_config_list": [
+                    {
+                        "python_path":["python_udls"],
+                        "module":"text_to_speech_udl",
+                        "entry_class":"TextToSpeechUDL",
+                        "udl_conf_key1":"text_to_speech_udl config key 1"
+                    }],
+                "destinations": [{}]
+            }
+        ]
+    },
+    {
+        "id": "200000000-2bbb-11b2-2222-000000022222",
+        "desc": "Monolithic UDL for Pipeline2",
+        "graph": [
+            {
+                "pathname": "/pipeline2_mon",
+                "user_defined_logic_list": ["6cfe8f64-3a1d-11ed-8e7e-0242ac110006"],
+                "user_defined_logic_stateful_list": ["singlethreaded"],
+                "user_defined_logic_config_list": [
+                    {
+                        "python_path":["python_udls"],
+                        "module":"pipeline2_mon_udl",
+                        "entry_class":"Pipeline2monoUDL",
+                        "use_precomputed_index":true,
+                        "index_file":"/mydata/msmarco/msmarco.index",
+                        "doc_file_pathname":"/mydata/msmarco/msmarco_3_clusters/doc_list.pkl",
+                        "emb_directory":"/mydata/msmarco/msmarco_3_clusters"
+                    }],
                 "destinations": [{}]
             }
         ]

@@ -100,6 +100,46 @@ public:
     void reset();
 };
 
+// in the format <query_id, client_id, query_text>
+using encoder_query_t = std::tuple<query_id_t, uint32_t, std::shared_ptr<std::string>>;
+
+/** Similar to EmbeddingQueryBatcher, but is used to gather and serialize queries
+ * to the encoder UDL to be transformed into an EmbeddingQueryBatcher
+ */
+class EncoderQueryBatcher {
+private:
+    std::vector<encoder_query_t> _queries;
+
+private:
+    // number of queries
+    static constexpr uint32_t HEADER_SIZE = sizeof(uint32_t);
+
+    // query_id, client_id, query_text_position, query_text_size
+    static constexpr uint32_t METADATA_SIZE = sizeof(uint32_t) * 3 + sizeof(query_id_t);
+    
+    // maps from query_id to number of bytes used to encode query string
+    std::unordered_map<query_id_t, uint32_t> _text_size_mapping;
+
+    // blob representation of this class, updated when serialize() is called
+    std::shared_ptr<derecho::cascade::Blob> _blob_repr;
+    
+    uint32_t _total_obj_size;
+    uint32_t _total_text_size;
+
+public:
+    // emb_dim: specify the desired number of dims for the encoded text
+    // size_hint: used to reserve space in the underlying vector for performance optimization
+    EncoderQueryBatcher(uint64_t size_hint = 1000);
+
+    void add_query(const encoder_query_t &query);
+    void add_query(query_id_t query_id, uint32_t node_id, std::shared_ptr<std::string> query_text);
+
+    std::shared_ptr<derecho::cascade::Blob> get_blob() const;
+
+    void serialize();
+    void reset();
+};
+
 /*
  * This encapsulates the results of the cluster search.
  * 
@@ -250,6 +290,12 @@ class ClientNotificationBatcher {
     uint32_t num_aggregates = 0;
     bool include_distances = false;
 
+    // below are variables serialize_for_doc_retrieval()
+    uint32_t metadata_size;
+    uint32_t total_text_size;
+    
+    std::unordered_map<query_id_t,uint32_t> text_size;
+
     std::vector<std::unique_ptr<ClusterSearchResultsAggregate>> aggregates;
     std::shared_ptr<derecho::cascade::Blob> blob;
 
@@ -259,8 +305,10 @@ public:
     void add_aggregate(std::unique_ptr<ClusterSearchResultsAggregate> aggregate);
 
     std::shared_ptr<derecho::cascade::Blob> get_blob();
+    int get_front_query_id();
 
     void serialize();
+    void serialize_for_doc_retrieval();
     void reset();
 };
 
