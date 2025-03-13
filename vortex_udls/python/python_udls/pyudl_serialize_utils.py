@@ -73,7 +73,6 @@ class Batch:
 
     def serialize(self) -> np.ndarray:
         assert self._embeddings is not None, "please add embeddings before calling serialize"
-        print(self._embeddings.dtype)
         assert self._embeddings.dtype == np.float32, "embedding type is not float32"
         assert self._embeddings.shape[0] == self.size, "mismatched number of embeddings"
 
@@ -109,14 +108,11 @@ class Batch:
 
         # Allocate buffer
         
-        print("total size:", total_size)
         buffer = np.zeros(total_size, dtype=np.uint8)
 
         # **Step 1: Write header**
         np.frombuffer(buffer[:header_size], dtype=header_type)[0] = (self.size, embedding_position)
         
-
-
         # **Step 2: Write responses directly into the buffer while encoding**
         metadata_view = np.frombuffer(buffer[metadata_position:metadata_position + metadata_size], dtype=metadata_type)
         text_ptr_offset = text_position
@@ -142,8 +138,6 @@ class Batch:
         # lesson learned
         # do not use .astype as that is a cast on each element of the array
         # use .view, which is simular to C++'s reinterpret_cast
-        print("embedding position", embedding_position)
-        print("total emb size", total_emb_size)
         buffer[embedding_position:] = self._embeddings.flatten().view(np.uint8)
         return buffer
 

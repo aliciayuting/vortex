@@ -13,6 +13,9 @@
                         "python_path":["python_udls"],
                         "module":"encode_udl",
                         "entry_class":"EncodeUDL",
+                        "max_queued_entries": 64,
+                        "max_batch_size": 32,
+                        "batch_time_us": 1000,
                         "encoder_config": {
                             "model": "BAAI/bge-small-en-v1.5",
                             "device": "cuda:0"

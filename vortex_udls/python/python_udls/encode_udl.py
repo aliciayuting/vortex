@@ -17,10 +17,9 @@ from derecho.cascade.member_client import ServiceClientAPI
 warnings.filterwarnings("ignore")
 from pyudl_serialize_utils import Batch
 
-# Have 3 classes:
-# 1. Batcher
-# 2. Compute
-# 3. Sender
+# batching queue
+# encoding queue
+# sending queue 
 
 class Batcher(threading.Thread):
     def __init__(self, output: Queue[Batch], max_batch_size: int, capacity: int = 32, batch_time_us: int = 10_000):
@@ -43,7 +42,6 @@ class Batcher(threading.Thread):
         
     def push_batch(self, batch: Batch):
         # verified shallow copy
-        print("queued batch item")
         self._blob_queue.put(batch)
 
     def run(self):
@@ -103,56 +101,65 @@ class Worker(threading.Thread):
                 # for deserialization
                 self._model = FlagModel(self._model_name, device=self._device, use_fp16 = False)
 
-            print("encoded embeddings")
+            timeit_start = time.time()
             embeddings: np.ndarray = self._model.encode( # type: ignore
                 batch.query_list,
                 convert_to_numpy=True
             )
+            timeit_stop = time.time()
+            print(f"Prediction time: {(timeit_stop - timeit_start)*1_000_000} us")
 
             batch.add_embeddings(embeddings)
             self._send_queue.put(batch)
         
-
 class Sender(threading.Thread):
-    def __init__(self, id: int, send_queue: Queue[Batch]):
+    def __init__(self, send_queue: Queue[Batch]):
         super().__init__()
         self._send_queue = send_queue
         self._batch_id = 0
         self._my_id = id
+        self._capi = ServiceClientAPI()
+        self._my_id = self._capi.get_my_id()
 
     def run(self):
         while True:
             batch = self._send_queue.get()
+            timeit_start = time.time()
             output_bytes = batch.serialize()
-            print("received batch")
+            timeit_stop = time.time()
+            print(f"Serialization time: {(timeit_stop - timeit_start)*1_000_000} us")
 
             # format should be {client}_{batch_id} 
-            # TODO: maybe change from emit to put
-            key_str = f"{self._my_id}_{self._batch_id}"
-            cascade_context.emit(key_str, output_bytes, message_id=1)
+            key_str = f"/rag/emb/centroids_search/{self._my_id}_{self._batch_id}"
+            self._capi.put(key_str, output_bytes.tobytes())
             self._batch_id += 1
-
 
 class EncodeUDL(UserDefinedLogic):
     def __init__(self, conf_str: str):
         # TODO: parse in conf
         self._conf: dict[str, Any] = json.loads(conf_str)
-        print(self._conf)
 
         self._tl = TimestampLogger()
-        self._capi = ServiceClientAPI()
-        self._my_id = self._capi.get_my_id()
-
         self._encode_queue: Queue[Batch] = Queue()
         self._send_queue: Queue[Batch] = Queue()
 
-        self._batcher = Batcher(self._encode_queue, 32)
+        self._batcher = Batcher(
+            self._encode_queue,
+            self._conf["max_batch_size"],
+            self._conf["max_queued_entries"],
+            self._conf["batch_time_us"]
+        )
         self._batcher.start()
 
-        self._worker = Worker(self._encode_queue, self._send_queue, "BAAI/bge-small-en-v1.5", device="cuda:0")
+        self._worker = Worker(
+            self._encode_queue,
+            self._send_queue,
+            self._conf["encoder_config"]["model"],
+            device=self._conf["encoder_config"]["device"]
+        )
         self._worker.start()
 
-        self._sender = Sender(self._my_id, self._send_queue)
+        self._sender = Sender(self._send_queue)
         self._sender.start()
 
     def ocdpo_handler(self, **kwargs):
@@ -163,15 +170,14 @@ class EncodeUDL(UserDefinedLogic):
         # TODO: this logging only works for batch of 1
         self._tl.log(10001, message_id, 0, 0)
 
-        # divide incoming strings into chunks of at most self._max_batch_size
-        print("received blob object")
         batch = Batch()
+
+        timeit_start = time.time()
         batch.deserialize(kwargs["blob"])
+        timeit_stop = time.time()
+        print(f"Deserialization time: {(timeit_stop - timeit_start)*1_000_000} us")
+
         self._batcher.push_batch(batch)
-
-
-        # return None
-
 
     def __del__(self):
         pass

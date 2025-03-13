@@ -104,6 +104,8 @@ def put_initial_embeddings_docs(capi, basepath, put_docs=True, embed_dim=1024):
         chunk_idx = break_into_chunks(len(table_dict), NUM_KEY_PER_MAP_OBJ)
         table_key_list = list(table_dict.keys())
         for j, (start_idx, end_idx) in enumerate(chunk_idx):
+            if j > 2:
+                break
             key = f"/rag/doc/emb_doc_map/cluster{cluster_id}/{j}"
             table_dict_chunk = {k: table_dict[k] for k in table_key_list[start_idx:end_idx]}
             table_json = json.dumps(table_dict_chunk)
@@ -119,6 +121,8 @@ def put_initial_embeddings_docs(capi, basepath, put_docs=True, embed_dim=1024):
     centroids_chunk_idx = break_into_chunks(centroids_embs.shape[0], NUM_EMB_PER_OBJ)
     print(f"Initilizing: put {centroids_embs.shape[0]} centroids embeddings to cascade")
     for i, (start_idx, end_idx) in enumerate(centroids_chunk_idx):
+        if i > 2:
+            break
         key = f"/rag/emb/centroids_obj/{i}"
         centroids_embs_chunk = centroids_embs[start_idx:end_idx]
         res = capi.put(key, centroids_embs_chunk.tobytes())
@@ -142,7 +146,12 @@ def put_initial_embeddings_docs(capi, basepath, put_docs=True, embed_dim=1024):
         cluster_embs = get_embeddings(basepath, cluster_file_name, embed_dim)
         num_embeddings = cluster_embs.shape[0]
         cluster_chunk_idx = break_into_chunks(num_embeddings, NUM_EMB_PER_OBJ)
+        if cluster_id > 2:
+            break
         for i, (start_idx, end_idx) in enumerate(cluster_chunk_idx):
+            if i > 2:
+                break            
+
             key = f"/rag/emb/clusters/cluster{cluster_id}/{i}"
             cluster_embs_chunk = cluster_embs[start_idx:end_idx]
             res = capi.put(key, cluster_embs_chunk.tobytes())
