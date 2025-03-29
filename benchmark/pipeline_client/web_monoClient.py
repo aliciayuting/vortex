@@ -1,181 +1,110 @@
 #!/usr/bin/env python3
+import threading
+import time
 import numpy as np
-import os, time
-import struct
-import torch
-import json
-from easydict import EasyDict
-from derecho.cascade.external_client import ServiceClientAPI
-from derecho.cascade.external_client import TimestampLogger
-from transformers import AutoImageProcessor
+from flask import Flask, request, jsonify
 from PIL import Image
-from flmr import (
-    FLMRConfig,
-    FLMRQueryEncoderTokenizer,
-)
-from datasets import load_dataset
-from serialize_utils import MonoDataBatcher
-from torch.utils.data import DataLoader
+from transformers import AutoImageProcessor
+from derecho.cascade.external_client import ServiceClientAPI, TimestampLogger
+from serialize_utils import MonoDataBatcher, WebDataBatcher
 
+# Global configuration variables.
+BATCH_THRESHOLD = 4  # How many individual batches to accumulate before processing.
+incoming_batches = []  # A list to hold received batches.
+incoming_lock = threading.Lock()
+
+# Create instances of capi and timestamp logger.
+capi = ServiceClientAPI()
+tl = TimestampLogger()
+
+# Use a prefix and other parameters as before.
+prefix = "/Mono/"
+subgroup_type = "VolatileCascadeStoreWithStringKey"
+subgroup_index = 0
 MONO_SHARD_IDS = [0, 1, 2]
+batch_counter = 0  # To keep track of the aggregated batches sent.
 
 
-def serialize_string_list(string_list):
-    """Serialize a list of strings into a custom binary format."""
-    encoded_strings = [s.encode('utf-8') for s in string_list]
-    offsets = []
-    current_offset = 0
-
-    # Compute the offsets for each string
-    for s in encoded_strings:
-        offsets.append(current_offset)
-        current_offset += len(s)
-
-    # Pack the number of elements
-    header = struct.pack("I", len(string_list))  # 4 bytes for length
-    offset_section = struct.pack(f"{len(offsets)}I", *offsets)  # 4 bytes per offset
-
-    # Concatenate everything into a byte stream
-    serialized_data = header + offset_section + b''.join(encoded_strings)
-    return serialized_data
 
 
-def prepare_text_sequence(sample):
-    sample = EasyDict(sample)
+app = Flask(__name__)
 
-    module = EasyDict(
-        {"type": "QuestionInput", "option": "default", "separation_tokens": {"start": "", "end": ""}}
-    )
+@app.route('/upload_data', methods=['POST'])
+def upload_data():
+    """
+    Endpoint to receive binary data. It decodes the bytes into a MonoDataBatcher,
+    optionally pre-processes the images, and then enqueues the sample for aggregation.
+    """
+    data_bytes = request.data
+    if not data_bytes:
+        return jsonify({'error': 'No data received'}), 400
 
-    instruction = sample.instruction.strip()
-    if instruction[-1] != ":":
-        instruction = instruction + ":"
-    instruction = instruction.replace(":", flmr_config.mask_instruction_token)
-    #random_instruction = random.choice(instructions)
-    text_sequence = " ".join(
-        [instruction]
-        + [module.separation_tokens.start]
-        + [sample.question]
-        + [module.separation_tokens.end]
-    )
-
-    sample["text_sequence"] = text_sequence
-
-    return sample
+    data_array = np.frombuffer(data_bytes, dtype=np.uint8)
+    
+    batcher = MonoDataBatcher()
+    batcher.deserialize(data_array)
     
     
-def tokenize_inputs(examples, query_tokenizer, image_processor):
-        encoding = query_tokenizer(examples["text_sequence"])
-        examples["input_ids"] = encoding["input_ids"]
-        examples["attention_mask"] = encoding["attention_mask"]
 
-        pixel_values = []
-        for img_path in examples["img_path"]:
-
-            if img_path is None:
-                image = Image.new("RGB", (336, 336), color='black')
-            else:
-                image = Image.open(img_path).convert("RGB")
-            
-            encoded = image_processor(image, return_tensors="pt")
-            pixel_values.append(encoded.pixel_values)
-
-        pixel_values = torch.stack(pixel_values, dim=0)
-        examples["pixel_values"] = pixel_values
-        return examples
+    # Enqueue the received batcher.
+    with incoming_lock:
+        incoming_batches.append(batcher)
     
-def add_path_prefix_in_img_path(example, prefix):
-        if example["img_path"] != None:
-            example["img_path"] = os.path.join(prefix, example["img_path"])
-        return example
-    
+    # Respond immediately to acknowledge receipt.
+    return jsonify({'message': 'Data received'}), 200
 
-
+def batch_processor():
+    """
+    Background thread that checks the incoming_batches queue. Once enough
+    samples are available (or after a timeout), it aggregates them into a single batch,
+    serializes the aggregated batch, and sends it with capi.put_nparray().
+    """
+    global batch_counter
+    # You can also implement a timeout-based flush if desired.
+    while True:
+        time.sleep(0.1)  # Check periodically.
+        with incoming_lock:
+            if len(incoming_batches) >= BATCH_THRESHOLD:
+                # Create a new aggregated batch.
+                aggregated_batcher = MonoDataBatcher()
+                # Aggregate fields from each received batch.
+                for b in incoming_batches:
+                    aggregated_batcher.question_ids.extend(b.question_ids)
+                    aggregated_batcher.images.extend(b.images)
+                    aggregated_batcher.questions.extend(b.questions)
+                    aggregated_batcher.text_sequences.extend(b.text_sequences)
+                    # If you have additional fields (e.g. pixel_values), aggregate them too.
+                    if hasattr(b, "pixel_values"):
+                        if not hasattr(aggregated_batcher, "pixel_values"):
+                            aggregated_batcher.pixel_values = []
+                        aggregated_batcher.pixel_values.extend(b.pixel_values)
+                # Clear the queue.
+                incoming_batches.clear()
+                
+                print(f"Aggregated batch of size {len(aggregated_batcher.question_ids)}")
+                
+                # Serialize the aggregated batch.
+                serialized_np = aggregated_batcher.serialize()
+                
+                # Determine shard id (rotating among MONO_SHARD_IDS).
+                shard_id = MONO_SHARD_IDS[batch_counter % len(MONO_SHARD_IDS)]
+                
+                # Call capi.put_nparray() to send the aggregated batch.
+                res = capi.put_nparray(prefix + f"_{batch_counter}",
+                                       serialized_np,
+                                       subgroup_type=subgroup_type,
+                                       subgroup_index=subgroup_index,
+                                       shard_index=shard_id,
+                                       message_id=batch_counter,
+                                       as_trigger=True,
+                                       blokcing=False)
+                print(f"Sent aggregated batch {batch_counter} with result: {res}")
+                batch_counter += 1
 
 if __name__ == "__main__":
-    # prepare inputs
-    # tokenize inputs
-    # pass to UDL
-    tl              = TimestampLogger()
-    capi            = ServiceClientAPI()
-    prefix          = "/Mono/"
-    subgroup_type   = "VolatileCascadeStoreWithStringKey"
-    subgroup_index  = 0
-    BS              = 1
-    num_batches     = 1000
+    # Start the background batch processor thread.
+    processor_thread = threading.Thread(target=batch_processor, daemon=True)
+    processor_thread.start()
     
-    checkpoint_path = 'LinWeizheDragon/PreFLMR_ViT-L'
-    image_processor_name = 'openai/clip-vit-large-patch14'
-    ds_dir = "/mnt/nvme0/vortex_pipeline1/EVQA_data"
-    image_root_dir = "/mnt/nvme0/vortex_pipeline1"
-    use_split = "train"
-    # model configs, tokenziers
-    flmr_config = FLMRConfig.from_pretrained(checkpoint_path)
-    query_tokenizer = FLMRQueryEncoderTokenizer.from_pretrained(checkpoint_path,
-                                                                    text_config=flmr_config.text_config,
-                                                                    subfolder="query_tokenizer")
-    image_processor = AutoImageProcessor.from_pretrained(image_processor_name)
-    
-    ds = load_dataset('parquet', data_files ={  
-                                            'train' : ds_dir + '/train-00000-of-00001.parquet',
-                                            'test'  : ds_dir + '/test-00000-of-00001-2.parquet',
-                                            })[use_split].select([i for i in range(166000, 167000, 1)])
-    # preprocess datasets so that we have 
-    ds = ds.map(add_path_prefix_in_img_path, fn_kwargs={"prefix": image_root_dir})
-    ds = ds.map(prepare_text_sequence)
-    ds = ds.map(
-        tokenize_inputs,
-        fn_kwargs={"query_tokenizer": query_tokenizer, "image_processor": image_processor},
-        batched=True,
-        batch_size=16,
-        num_proc=16,
-    )
-    
-    ds.set_format(
-        type="torch", 
-        columns=["input_ids", "attention_mask", "pixel_values", "text_sequence", "question_id", "question"]
-    )
-
-
-    # Create a DataLoader for sequential access with prefetching
-    loader = DataLoader(
-        ds, 
-        batch_size=BS, 
-        shuffle=False, 
-        num_workers=16,      # Use multiple workers to prefetch batches in parallel
-        prefetch_factor=2,   # How many batches each worker preloads (can adjust based on your system)
-        pin_memory=True      # Optionally, if you are transferring to GPU later
-    )
-
-    
-    # for i in range(0, len(ds), batch_size):
-    #     # idx = torch.randint(0, 500, (1,)).item()
-    #     batch = ds[i : i + batch_size]
-    #     if (i // batch_size) >= num_batches:    
-    #         # print(f"Batch no. {i // batch_size} reached!  Now break")
-    #         break
-    for batch_idx, batch in enumerate(loader):
-        if batch_idx >= num_batches:
-            break
-        
-        batcher = MonoDataBatcher()
-        # print(f"Got qid list : {batch['question_id']}")
-        for qid in batch["question_id"]:
-            uds_idx =  int(qid.find("_"))
-            question_id = qid[uds_idx+1:]
-            batcher.question_ids.append(question_id)
-            tl.log(1000, int(question_id), 0, 0)
-        batcher.attention_mask = batch["attention_mask"].numpy()
-        batcher.input_ids = batch["input_ids"].numpy()
-        batcher.text_sequence = batch["question"] 
-        batcher.pixel_values = batch["pixel_values"].numpy()
-        serialized_np = batcher.serialize()
-        
-        mono_shard_id = MONO_SHARD_IDS[(batch_idx) % len(MONO_SHARD_IDS)]
-        
-        res = capi.put_nparray(prefix + f"_{batch_idx}", serialized_np, subgroup_type=subgroup_type,
-                    subgroup_index=subgroup_index,shard_index=mono_shard_id, message_id=batch_idx, as_trigger=True, blokcing=False)
-
-        time.sleep(0.05)
-        
-    tl.flush("mono_client_timestamp.dat")
+    # Run the Flask server (using threaded mode so that multiple requests can be handled concurrently).
+    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
