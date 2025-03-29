@@ -20,8 +20,10 @@ from serialize_utils import PixelValueBatcher, TextDataBatcher
 from torch.utils.data import DataLoader
 # import faiss
 
-image_root_dir = "/mydata/EVQA/"
-ds_dir = "/mydata/EVQA/EVQA_data/"
+# image_root_dir = "/mydata/EVQA/"
+image_root_dir = "/mnt/nvme0/vortex_pipeline1/"
+# ds_dir = "/mydata/EVQA/EVQA_data/"
+ds_dir = "/mnt/nvme0/vortex_pipeline1/EVQA_data/"
 STEPA_SHARD_INDICES = [2]
 STEPB_SHARD_INDICES = [0, 1]
 STEPA_SUBGROUP_INDEX = 0
@@ -130,11 +132,11 @@ def batch_iter(dataset, batch_size):
 if __name__ == "__main__":
     tl = TimestampLogger()
     capi = ServiceClientAPI()
-    stepa_prefix = "/stepA/"
-    stepb_prefix = "/stepB/"
+    stepa_prefix = "/no_cache_stepA/"
+    stepb_prefix = "/no_cache_stepB/"
     subgroup_type = "VolatileCascadeStoreWithStringKey"
     
-    res = capi.create_object_pool("/stepD",subgroup_type,0)
+    res = capi.create_object_pool("/no_cache_stepD",subgroup_type,0)
     if res:
         ver = res.get_result()
         print("created object pool for /stepD")
@@ -142,7 +144,7 @@ if __name__ == "__main__":
         print("Failed to create object pool for /stepD")
     
     BS = 1
-    num_batches = 1000
+    num_batches = 10
     
     # directories and str configs
     image_processor_name = 'openai/clip-vit-large-patch14'

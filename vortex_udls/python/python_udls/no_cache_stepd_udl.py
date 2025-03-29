@@ -18,8 +18,9 @@ STEPD_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 STEPD_NEXT_UDL_SUBGROUP_INDEX = 0
 STEPD_NEXT_UDL_PREFIX = "/stepE"
 
-RESULTA_PREFIX = "/stepD/resultA_"
-RESULTB_PREFIX = "/stepD/resultB_"
+RESULTA_PREFIX = "/no_cache_stepD/resultA_"
+RESULTB_PREFIX = "/no_cache_stepD/resultB_"
+NUM_TRIES = 2
 
 class StepCDModelWorker:
     '''
@@ -318,85 +319,68 @@ class StepCDUDL(UserDefinedLogic):
         if step_A_idx != -1:
             stepa_serializer = StepAResultBatchManager()
             
-            # for idx, qid in enumerate(stepa_serializer.question_ids):
-            #     self.tl.log(30000, qid, 1, 0)
-            #     if not self.collected_intermediate_results.get(qid):
-            #         self.collected_intermediate_results[qid] = StepCDIntermediateResult()
-            #     # TODO: currently copying, because the execution needs to aggregate results from both stepA and stepB
-            #     #       and the original data may be overwritten in the RDMA buffer
-            #     self.collected_intermediate_results[qid]._question_id = qid
-            #     self.collected_intermediate_results[qid]._np_text_sequence_bytes = np.copy(stepa_serializer.np_text_sequence_bytes[idx])
-            #     self.collected_intermediate_results[qid]._input_ids = torch.Tensor(stepa_serializer.input_ids[idx])
-            #     self.collected_intermediate_results[qid]._text_embeddings = torch.Tensor(stepa_serializer.text_embeds[idx])
-            #     self.collected_intermediate_results[qid]._text_encoder_hidden_states = torch.Tensor(stepa_serializer.text_encoder_hidden_states[idx])
-            #     if self.collected_intermediate_results[qid].collected_all():
-            #         self.model_worker.push_to_pending_batches(self.collected_intermediate_results[qid])
-            #         self.tl.log(30011, qid, 3, 0)
-            #         del self.collected_intermediate_results[qid]
-            
             qid = int(key[key.find("resultA_")+8:])
             self.tl.log(30000, qid, 1, 0)
             
             stepB_result_key = RESULTB_PREFIX + str(qid)
-            # Get stepB result
-            res = self.capi.get(stepB_result_key)
-            if res:
-                stepa_serializer.deserialize(blob)
-                
-                stepCD_intermediate_result._question_id = qid
-                stepCD_intermediate_result._np_text_sequence_bytes = np.copy(stepa_serializer.np_text_sequence_bytes[0])
-                stepCD_intermediate_result._input_ids = torch.Tensor(stepa_serializer.input_ids[0])
-                stepCD_intermediate_result._text_embeddings = torch.Tensor(stepa_serializer.text_embeds[0])
-                stepCD_intermediate_result._text_encoder_hidden_states = torch.Tensor(stepa_serializer.text_encoder_hidden_states[0])
-                
-                odict = res.get_result()
-                print(f"At StepD {stepB_result_key} type: {type(odict)}")
-                print(f"odict: {odict}")
-                # Deserialize the stepB result
-                stepb_batcher = StepBResultBatchManager()
-                # stepb_batcher.deserialize(odict)
-                # stepCD_intermediate_result._vision_embeddings = torch.Tensor(stepb_batcher.vision_embedding[0])
-                # stepCD_intermediate_result._vision_second_last_layer_hidden_states = torch.Tensor(stepb_batcher.vision_second_last_layer_hidden_states[0])
-                collect_all =  True
+            for i in range(NUM_TRIES):
+                # Get stepB result
+                res = self.capi.get(stepB_result_key)
+                if res:
+                    odict = res.get_result()
+                    blob_b = odict["value"]
+                    if len(blob_b) == 0:
+                        continue
+                    
+                    stepa_serializer.deserialize(blob)
+                    stepCD_intermediate_result._question_id = qid
+                    stepCD_intermediate_result._np_text_sequence_bytes = np.copy(stepa_serializer.np_text_sequence_bytes[0])
+                    stepCD_intermediate_result._input_ids = torch.Tensor(stepa_serializer.input_ids[0])
+                    stepCD_intermediate_result._text_embeddings = torch.Tensor(stepa_serializer.text_embeds[0])
+                    stepCD_intermediate_result._text_encoder_hidden_states = torch.Tensor(stepa_serializer.text_encoder_hidden_states[0])
+                    
+                    # Deserialize the stepB result
+                    stepb_batcher = StepBResultBatchManager()
+                    arr_b = np.frombuffer(blob_b, dtype=np.uint8)
+                    stepb_batcher.deserialize(arr_b)
+                    stepCD_intermediate_result._vision_embeddings = torch.Tensor(stepb_batcher.vision_embedding[0])
+                    stepCD_intermediate_result._vision_second_last_layer_hidden_states = torch.Tensor(stepb_batcher.vision_second_last_layer_hidden_states[0])
+                    collect_all =  True
+                    break
                 
         
             
         elif step_B_idx != -1:
             stepb_batcher = StepBResultBatchManager()
-
-            # for idx, qid in enumerate(stepb_batcher.question_ids):
-            #     self.tl.log(30010, qid, 2, 0)
-            #     if not self.collected_intermediate_results.get(qid):
-            #         self.collected_intermediate_results[qid] = StepCDIntermediateResult()
-            #     self.collected_intermediate_results[qid]._question_id = qid
-            #     self.collected_intermediate_results[qid]._vision_embeddings = torch.Tensor(stepb_batcher.vision_embedding[idx])
-            #     self.collected_intermediate_results[qid]._vision_second_last_layer_hidden_states = torch.Tensor(stepb_batcher.vision_second_last_layer_hidden_states[idx])
-            
             qid = int(key[key.find("resultB_")+8:])
             self.tl.log(30010, qid, 2, 0)
             stepA_result_key = RESULTA_PREFIX + str(qid)
-            # Get stepA result
-            res = self.capi.get(stepA_result_key)
-            if res:
-                
-                odict = res.get_result()
-                print(f"At StepD {stepA_result_key} type: {type(odict)}")
-                print(f"odict: {odict}")
-                
-                
-                stepb_batcher.deserialize(blob)
-                
-                # stepCD_intermediate_result._question_id = qid
-                # stepCD_intermediate_result._vision_embeddings = torch.Tensor(stepb_batcher.vision_embedding[0])
-                # stepCD_intermediate_result._vision_second_last_layer_hidden_states = torch.Tensor(stepb_batcher.vision_second_last_layer_hidden_states[0])
-                stepa_batcher = StepAResultBatchManager()
-                # stepCD_intermediate_result._input_ids = torch.Tensor(stepa_batcher.input_ids[0])
-                # stepa_batcher.deserialize(odict)
-                # stepCD_intermediate_result._text_embeddings = torch.Tensor(stepa_batcher.text_embeds[0])
-                # stepCD_intermediate_result._text_encoder_hidden_states = torch.Tensor(stepa_batcher.text_encoder_hidden_states[0])
-                # stepCD_intermediate_result._np_text_sequence_bytes = np.copy(stepa_batcher.np_text_sequence_bytes[0])
-                
-                collect_all = True
+            for i in range(NUM_TRIES):
+                # Get stepA result
+                res = self.capi.get(stepA_result_key)
+                if res:
+                    
+                    odict = res.get_result()
+                    blob_a = odict["value"]
+                    if len(blob_a) == 0:
+                        continue
+                    
+                    stepb_batcher.deserialize(blob)
+                    
+                    stepCD_intermediate_result._question_id = qid
+                    stepCD_intermediate_result._vision_embeddings = torch.Tensor(stepb_batcher.vision_embedding[0])
+                    stepCD_intermediate_result._vision_second_last_layer_hidden_states = torch.Tensor(stepb_batcher.vision_second_last_layer_hidden_states[0])
+                    
+                    stepa_batcher = StepAResultBatchManager()
+                    arr_a = np.frombuffer(blob_a, dtype=np.uint8)
+                    stepa_batcher.deserialize(arr_a)
+                    stepCD_intermediate_result._input_ids = torch.Tensor(stepa_batcher.input_ids[0])
+                    stepCD_intermediate_result._text_embeddings = torch.Tensor(stepa_batcher.text_embeds[0])
+                    stepCD_intermediate_result._text_encoder_hidden_states = torch.Tensor(stepa_batcher.text_encoder_hidden_states[0])
+                    stepCD_intermediate_result._np_text_sequence_bytes = np.copy(stepa_batcher.np_text_sequence_bytes[0])
+                    
+                    collect_all = True
+                    break
         
         if collect_all:
             self.tl.log(30011, qid, 3, 0)

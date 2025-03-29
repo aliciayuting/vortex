@@ -15,7 +15,7 @@ from derecho.cascade.member_client import TimestampLogger
 from VisionEncoder import VisionEncoder
 from serialize_utils import PixelValueBatcher, PendingVisionDataBatcher, StepBResultBatchManager
 
-STEPB_NEXT_UDL_PREFIX = "/stepD/resultB_"
+STEPB_NEXT_UDL_PREFIX = "/no_cache_stepD/resultB_"
 STEPB_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 STEPB_NEXT_UDL_SUBGROUP_INDEX = 0
 
