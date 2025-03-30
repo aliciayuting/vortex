@@ -1,3 +1,6 @@
 [submodule "data/gp-ann"]
 	path = data/gp-ann
 	url = https://github.com/aliciayuting/gp-ann.git
+[submodule "vortex_udls/python/python_udls/SenseVoice"]
+	path = vortex_udls/python/python_udls/SenseVoice
+	url = https://github.com/aliciayuting/SenseVoice.git
