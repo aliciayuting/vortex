@@ -8,7 +8,7 @@
 namespace derecho{
 namespace cascade{
 
-#define MY_UUID     "88e80f9c-8800-99eb-8999-0888aa880009"
+#define MY_UUID     "88e10f9c-8800-77eb-8999-0888aa880007"
 #define MY_DESC     "UDL that is the receiver of the oob."
 
 std::string get_uuid() {
