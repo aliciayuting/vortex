@@ -2,3 +2,5 @@
 ../../vortex_udls/libclusters_search_udl.so
 ../../vortex_udls/libaggregate_udl.so
 ../../vortex_udls/libpython_udl_manager.so
+../../vortex_udls/liboob_sender_udl.so
+../../vortex_udls/liboob_receiver_udl.so
