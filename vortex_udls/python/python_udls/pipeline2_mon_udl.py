@@ -15,7 +15,7 @@ import transformers
 import warnings
 from FlagEmbedding import FlagModel
 from transformers import BartForSequenceClassification, BartTokenizer, SpeechT5Processor, SpeechT5ForTextToSpeech, SpeechT5HifiGan
-from pyudl_serialize_utils import Batch
+from pipeline2_serialize_utils import QueryBatcher
 
 
 from derecho.cascade.udl import UserDefinedLogic

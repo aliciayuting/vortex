@@ -10,7 +10,7 @@ import cascade_context
 from derecho.cascade.member_client import ServiceClientAPI
 from derecho.cascade.member_client import TimestampLogger
 from derecho.cascade.udl import UserDefinedLogic
-from pyudl_serialize_utils import DocGenResult, DocGenResultBatcher, AggregateResultBatch
+from pipeline2_serialize_utils import DocGenResult, DocGenResultBatcher, AggregateResultBatch
 
 NEXT_UDL_PREFIXES = ["/rag/generate/check"]
 NEXT_UDL_SUBGROUP_INDEXES = [1]

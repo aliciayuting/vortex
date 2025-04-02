@@ -1,57 +1,83 @@
 #!/usr/bin/env python3
 import json
 import numpy as np
+import os
 from typing import Any
 import threading
+import sys
+
+from funasr.utils.postprocess_utils import rich_transcription_postprocess
+from funasr.utils.load_utils import extract_fbank
 
 from derecho.cascade.udl import UserDefinedLogic
 from derecho.cascade.member_client import ServiceClientAPI
 from derecho.cascade.member_client import TimestampLogger
 
-from pipeline2_serialize_utils import (QueryBatcherManager, 
-                                       PendingEncodeDataBatcher,
-                                       EncodeResultBatchManager)
-from FlagEmbedding import FlagModel
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "SenseVoice"))
+from SenseVoice.utils.frontend import WavFrontend, WavFrontendOnline
+from SenseVoice.model import SenseVoiceSmall
+
 from workers_util import ExecWorker, EmitWorker
+from pipeline2_serialize_utils import AudioBatcher, PendingAudioRecDataBatcher, QueryBatcherManager
 
 
-ENCODE_NEXT_UDL_PREFIX = "/search/"
-ENCODE_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
-ENCODE_NEXT_UDL_SUBGROUP_INDEX = 0
+AUDIO_NEXT_UDL_PREFIX = "/encode/"
+AUDIO_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
+AUDIO_NEXT_UDL_SUBGROUP_INDEX = 0
 
+class AudioRecognition:
+    def __init__(self, device_name, model_dir, language="en"):
+        '''
+        language: "zh", "en", "yue", "ja", "ko", "nospeech","auto"
+        '''
+        self.language = language
+        self.model_dir = model_dir # "iic/SenseVoiceSmall"
+        self.model = None
+        self.device_name = device_name
+        self.kwargs = None
+        self.frontend = None
 
-class TextEncoder:
-    def __init__(self, device: str, model_name: str):
-        self.encoder = None
-        self.device = device
-        self.model_name = model_name
-        
     def load_model(self):
-        self.encoder = FlagModel(self.model_name, devices=self.device)
-
-    def encoder_exec(self, query_list: list[str]) -> np.ndarray:
-        # Generate embedding dimesion of 384
-        if self.encoder is None:
+        self.model, self.kwargs = SenseVoiceSmall.from_pretrained(model=self.model_dir, device=self.device_name)
+        self.model.eval()
+        self.kwargs["data_type"] = "fbank"
+        self.kwargs["sound"] = "fbank"
+        self.frontend = self.kwargs["frontend"]
+        
+    def exec_model(self, batch_audios):
+        if self.model is None:
             self.load_model()
-        result =  self.encoder.encode(query_list)
-        return result
+        speech, speech_lengths = extract_fbank(
+            batch_audios, data_type=self.kwargs.get("data_type", "sound"), frontend=self.frontend
+        )
+        res = self.model.inference(
+            data_in=speech,
+            data_lengths=speech_lengths,
+            language=self.language, 
+            use_itn=False,
+            ban_emo_unk=True,
+            **self.kwargs,
+        )
+        text_list = []
+        for idx in range(len(res[0])):
+            text_list.append(rich_transcription_postprocess(res[0][idx]["text"]))
+        return text_list
 
 
-
-class EncodeWorker(ExecWorker):
+class SpeechTextWorker(ExecWorker):
     '''
-    This is a batch executor for text encoder execution
+    This is a batch executor for the audio recognition model
     '''
     def __init__(self, parent, thread_id):
         super().__init__(parent, thread_id)
         self.max_exe_batch_size = self.parent.max_exe_batch_size
         self.batch_time_us = self.parent.batch_time_us
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.encoder_model = TextEncoder(self.parent.device, self.parent.model_name)
+        self.audio_rec_model = AudioRecognition(self.parent.device, self.parent.model_name)
 
     def create_pending_manager(self):
-        return PendingEncodeDataBatcher(self.max_exe_batch_size)
-
+        return PendingAudioRecDataBatcher(self.max_exe_batch_size)
+    
     def main_loop(self):
         batch = None
         while self.running:
@@ -65,6 +91,7 @@ class EncodeWorker(ExecWorker):
                     self.current_batch = self.next_to_process
                     self.next_to_process = (self.next_to_process + 1) % len(self.pending_batches)
                     batch = self.pending_batches[self.current_batch]
+
                     if self.current_batch == self.next_batch:
                         self.next_batch = (self.next_batch + 1) % len(self.pending_batches)
                     self.new_space_available = True
@@ -75,58 +102,52 @@ class EncodeWorker(ExecWorker):
                 continue
             # Execute the batch
             for qid in batch.question_ids[:batch.num_pending]:
-                self.parent.tl.log(20030, qid, 0, batch.num_pending)
-            embeddings = self.encoder_model.encoder_exec(batch.queries[:batch.num_pending])
+                self.parent.tl.log(10030, qid, 0, batch.num_pending)
+            
+            query_list = self.audio_rec_model.exec_model(batch.audio_data[:batch.num_pending])
             for qid in batch.question_ids[:batch.num_pending]:
-                self.parent.tl.log(20031, qid, 0, batch.num_pending)
+                self.parent.tl.log(10031, qid, 0, batch.num_pending)
             self.parent.emit_worker.add_to_buffer(batch,
-                                                  embeddings, 
+                                                  query_list, 
                                                   batch.num_pending)
             self.pending_batches[self.current_batch].reset()
 
 
-
-class EncodeEmitWorker(EmitWorker):
+class SpeechTextEmitWorker(EmitWorker):
     '''
-    This is a batcher for encoderUDL to emit to centroids search UDL
+    This is a batcher for SpeechToTextUDL to emit to centroids search UDL
     '''
     def __init__(self, parent, thread_id):
         super().__init__(parent, thread_id)
         
-        self.emit_log_flag = 20100
+        self.emit_log_flag = 10100
         self.max_emit_batch_size = self.parent.max_emit_batch_size
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.next_udl_subgroup_type = ENCODE_NEXT_UDL_SUBGROUP_TYPE
-        self.next_udl_subgroup_index = ENCODE_NEXT_UDL_SUBGROUP_INDEX
+        self.next_udl_subgroup_type = AUDIO_NEXT_UDL_SUBGROUP_TYPE
+        self.next_udl_subgroup_index = AUDIO_NEXT_UDL_SUBGROUP_INDEX
         self.next_udl_shards = self.parent.next_udl_shards
-        self.next_udl_prefix = ENCODE_NEXT_UDL_PREFIX
-        
-        
-        
+        self.next_udl_prefix = AUDIO_NEXT_UDL_PREFIX
+    
     def create_batch_manager(self):
         # Return an instance of the batch manager that this child class needs.
-        return EncodeResultBatchManager()
+        return QueryBatcherManager()
 
-
-    def add_to_buffer(self, batch, embeddings, num_queries):
+    def add_to_buffer(self, batch, query_list, num_queries):
         '''
         pass by object reference to avoid deep-copy
         '''
         question_ids = batch.question_ids[:num_queries]
-        queries = batch.queries[:num_queries]
         
         with self.cv:
             # use question_id to determine which shard to send to
             for i in range(num_queries):
                 shard_pos = question_ids[i] % len(self.parent.next_udl_shards)
-                self.send_buffer[shard_pos].add_result(question_ids[i],  
-                                                       queries[i],
-                                                       embeddings[i])
+                self.send_buffer[shard_pos].add_result(question_ids[i],
+                                                       query_list[i])
             self.cv.notify()
-        
 
 
-class EncodeUDL(UserDefinedLogic):
+class SpeechToTextUDL(UserDefinedLogic):
     def __init__(self, conf_str: str):
         self.conf: dict[str, Any] = json.loads(conf_str)
         self.capi = ServiceClientAPI()
@@ -148,9 +169,9 @@ class EncodeUDL(UserDefinedLogic):
         Start the worker threads
         '''
         if not self.model_worker:
-            self.model_worker = EncodeWorker(self, 1)
+            self.model_worker = SpeechTextWorker(self, 1)
             self.model_worker.start()
-            self.emit_worker = EncodeEmitWorker(self, 2)
+            self.emit_worker = SpeechTextEmitWorker(self, 2)
             self.emit_worker.start()
 
     def ocdpo_handler(self, **kwargs):
@@ -159,20 +180,18 @@ class EncodeUDL(UserDefinedLogic):
             self.start_threads()
         data = kwargs["blob"]
         
-        query_batcher = QueryBatcherManager()
-        query_batcher.deserialize(data)
-        
-        for qid in query_batcher.question_ids:
-            self.tl.log(20000, qid, 0, 0)
-            
-        self.model_worker.push_to_pending_batches(query_batcher)
+        audio_batcher = AudioBatcher()
+        audio_batcher.deserialize(data)
+        for qid in audio_batcher.question_ids:
+            self.tl.log(10000, qid, 0, 0)
+        self.model_worker.push_to_pending_batches(audio_batcher)
 
 
     def __del__(self):
         '''
         Destructor
         '''
-        print(f"Encoder UDL destructor")
+        print(f"SpeechToTextUDL destructor")
         if self.model_worker:
             self.model_worker.signal_stop()
             self.model_worker.join()

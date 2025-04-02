@@ -10,8 +10,10 @@ from derecho.cascade.member_client import ServiceClientAPI
 from derecho.cascade.member_client import TimestampLogger
 from derecho.cascade.udl import UserDefinedLogic
 
-from pyudl_serialize_utils import DocGenResultBatcher
+from pipeline2_serialize_utils import DocGenResultBatcher
 
+
+QACHECK_WORKER_INITIAL_PENDING_BATCHES = 10
 
 '''
 Used for the ablation study of the pipeline
@@ -33,7 +35,7 @@ class QACheckUDL(UserDefinedLogic):
         self.model_name = "facebook/bart-large-mnli"
         self.nli_tokenizer = None
         self.model = None
-        self.hypothesis = "harmful"
+        self.hypothesis = "hateful"  # "disgust", "annoyance"
         
         self.task_queue = queue.Queue()
         

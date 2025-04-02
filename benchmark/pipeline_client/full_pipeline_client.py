@@ -146,7 +146,7 @@ def main(argv):
         serialized_requests = serialize(queries, queryid_list, EMB_DIM)
         
         _subgroup_type = SUBGROUP_TYPES["VCSS"]
-        capi.put(key, serialized_requests.tobytes(), 
+        capi.put_nparray(key, serialized_requests, 
                 # subgroup_type=_subgroup_type,
                 # subgroup_index=0,shard_index=0, 
                 trigger=True, # Use trigger put
