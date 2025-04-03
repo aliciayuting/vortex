@@ -126,7 +126,7 @@ class SpeechTextEmitWorker(EmitWorker):
         self.next_udl_subgroup_type = AUDIO_NEXT_UDL_SUBGROUP_TYPE
         self.next_udl_subgroup_index = AUDIO_NEXT_UDL_SUBGROUP_INDEX
         self.next_udl_shards = self.parent.next_udl_shards
-        self.next_udl_prefix = AUDIO_NEXT_UDL_PREFIX
+        self.next_udl_prefixes = [AUDIO_NEXT_UDL_PREFIX]
     
     def create_batch_manager(self):
         # Return an instance of the batch manager that this child class needs.

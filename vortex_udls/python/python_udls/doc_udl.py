@@ -3,54 +3,64 @@ import json
 import numpy as np
 from typing import Any
 import threading
+import faiss
+import pickle
 
 from derecho.cascade.udl import UserDefinedLogic
 from derecho.cascade.member_client import ServiceClientAPI
 from derecho.cascade.member_client import TimestampLogger
 
-from pipeline2_serialize_utils import (QueryBatcherManager, 
-                                       PendingEncodeDataBatcher,
-                                       EncodeResultBatchManager)
-from FlagEmbedding import FlagModel
+from pipeline2_serialize_utils import (PendingLoaderDataBatcher,
+                                       SearchResultBatchManager,
+                                       DocResultBatchManager)
+
 from workers_util import ExecWorker, EmitWorker
 
 
-ENCODE_NEXT_UDL_PREFIX = "/search/"
-ENCODE_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
-ENCODE_NEXT_UDL_SUBGROUP_INDEX = 0
+DOC_NEXT_UDL_PREFIXES = ["/text_check/" , "/lang_det/"]
+DOC_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
+DOC_NEXT_UDL_SUBGROUP_INDEX = 0
 
 
-class TextEncoder:
-    def __init__(self, device: str, model_name: str):
-        self.encoder = None
-        self.device = device
-        self.model_name = model_name
+class DocumentLoader:
+    def __init__(self, doc_dir):
+        self.doc_dir = doc_dir
+        self.doc_list = None
         
-    def load_model(self):
-        self.encoder = FlagModel(self.model_name, devices=self.device)
-
-    def encoder_exec(self, query_list: list[str]) -> np.ndarray:
-        # Generate embedding dimesion of 384
-        if self.encoder is None:
-            self.load_model()
-        result =  self.encoder.encode(query_list)
-        return result
+    def load_docs(self):
+        with open('filename.pkl', 'rb') as file:
+            self.doc_list = np.load(file)
 
 
+    def get_doc_list(self, doc_ids_list) -> list:
+        '''
+        doc_ids_list: list of list of doc_ids
+        '''
+        if self.doc_list is None:
+            self.load_docs()
+        doc_lists = []
+        for doc_ids in doc_ids_list:
+            cur_docs = []
+            for doc_id in doc_ids:
+                cur_docs.append(self.doc_list[doc_id])
+            doc_lists.append(cur_docs)
+        return doc_lists
 
-class EncodeWorker(ExecWorker):
+
+
+class DocWorker(ExecWorker):
     '''
-    This is a batch executor for text encoder execution
+    This is a batch executor for faiss searcher execution
     '''
     def __init__(self, parent, thread_id):
         super().__init__(parent, thread_id)
         self.max_exe_batch_size = self.parent.max_exe_batch_size
         self.batch_time_us = self.parent.batch_time_us
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.encoder_model = TextEncoder(self.parent.device, self.parent.model_name)
+        self.doc_loader = DocumentLoader(self.parent.doc_dir)
 
     def create_pending_manager(self):
-        return PendingEncodeDataBatcher(self.max_exe_batch_size)
+        return PendingLoaderDataBatcher(self.max_exe_batch_size, self.parent.emb_dim)
 
     def main_loop(self):
         batch = None
@@ -69,46 +79,49 @@ class EncodeWorker(ExecWorker):
                         self.next_batch = (self.next_batch + 1) % len(self.pending_batches)
                     self.new_space_available = True
                     self.cv.notify()
+                    print("found batch to exectute")
             if not self.running:
                 break
             if self.current_batch == -1 or not batch:
                 continue
             # Execute the batch
             for qid in batch.question_ids[:batch.num_pending]:
-                self.parent.tl.log(20030, qid, 0, batch.num_pending)
-            embeddings = self.encoder_model.encoder_exec(batch.queries[:batch.num_pending])
+                self.parent.tl.log(40030, qid, 0, batch.num_pending)
+            print("about to retrieve")
+            doc_lists = self.doc_loader.get_doc_list(batch.doc_ids[:batch.num_pending])
+            print(f"Doc list is {doc_lists}")
             for qid in batch.question_ids[:batch.num_pending]:
-                self.parent.tl.log(20031, qid, 0, batch.num_pending)
+                self.parent.tl.log(40031, qid, 0, batch.num_pending)
             self.parent.emit_worker.add_to_buffer(batch,
-                                                  embeddings, 
+                                                  doc_lists, 
                                                   batch.num_pending)
             self.pending_batches[self.current_batch].reset()
 
 
 
-class EncodeEmitWorker(EmitWorker):
+class DocEmitWorker(EmitWorker):
     '''
-    This is a batcher for encoderUDL to emit to centroids search UDL
+    This is a batcher for SearcherUDL to emit to centroids search UDL
     '''
     def __init__(self, parent, thread_id):
         super().__init__(parent, thread_id)
         
-        self.emit_log_flag = 20100
+        self.emit_log_flag = 40100
         self.max_emit_batch_size = self.parent.max_emit_batch_size
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.next_udl_subgroup_type = ENCODE_NEXT_UDL_SUBGROUP_TYPE
-        self.next_udl_subgroup_index = ENCODE_NEXT_UDL_SUBGROUP_INDEX
+        self.next_udl_subgroup_type = DOC_NEXT_UDL_SUBGROUP_TYPE
+        self.next_udl_subgroup_index = DOC_NEXT_UDL_SUBGROUP_INDEX
         self.next_udl_shards = self.parent.next_udl_shards
-        self.next_udl_prefixes = [ENCODE_NEXT_UDL_PREFIX]
+        self.next_udl_prefixes = DOC_NEXT_UDL_PREFIXES
         
         
         
     def create_batch_manager(self):
         # Return an instance of the batch manager that this child class needs.
-        return EncodeResultBatchManager()
+        return DocResultBatchManager()
 
 
-    def add_to_buffer(self, batch, embeddings, num_queries):
+    def add_to_buffer(self, batch, doc_lists, num_queries):
         '''
         pass by object reference to avoid deep-copy
         '''
@@ -121,23 +134,24 @@ class EncodeEmitWorker(EmitWorker):
                 shard_pos = question_ids[i] % len(self.parent.next_udl_shards)
                 self.send_buffer[shard_pos].add_result(question_ids[i],  
                                                        queries[i],
-                                                       embeddings[i])
+                                                       doc_lists[i,:])
             self.cv.notify()
         
 
 
-class EncodeUDL(UserDefinedLogic):
+class DocUDL(UserDefinedLogic):
     def __init__(self, conf_str: str):
         self.conf: dict[str, Any] = json.loads(conf_str)
         self.capi = ServiceClientAPI()
         self.tl = TimestampLogger()
         self.device = self.conf["device"]
-        self.model_name = self.conf["model_name"]
+        self.doc_dir = self.conf["index_dir"]
         self.max_exe_batch_size = int(self.conf.get("max_exe_batch_size", 16))
         self.batch_time_us = int(self.conf.get("batch_time_us", 1000))
         self.max_emit_batch_size = int(self.conf.get("max_emit_batch_size", 5))
         self.next_udl_shards = self.conf.get("next_udl_shards", [0,1])
         self.num_pending_buffer = self.conf.get("num_pending_buffer", 10)
+        self.topk = int(self.conf.get("topk", 5))
         
         self.model_worker = None
         self.emit_worker = None
@@ -148,9 +162,9 @@ class EncodeUDL(UserDefinedLogic):
         Start the worker threads
         '''
         if not self.model_worker:
-            self.model_worker = EncodeWorker(self, 1)
+            self.model_worker = DocWorker(self, 1)
             self.model_worker.start()
-            self.emit_worker = EncodeEmitWorker(self, 2)
+            self.emit_worker = DocEmitWorker(self, 2)
             self.emit_worker.start()
 
     def ocdpo_handler(self, **kwargs):
@@ -158,21 +172,22 @@ class EncodeUDL(UserDefinedLogic):
         if not self.model_worker:
             self.start_threads()
         data = kwargs["blob"]
+        print("serach udl ocdpo")
         
-        query_batcher = QueryBatcherManager()
-        query_batcher.deserialize(data)
+        search_res_batcher = SearchResultBatchManager()
+        search_res_batcher.deserialize(data)
         
-        for qid in query_batcher.question_ids:
-            self.tl.log(20000, qid, 0, 0)
+        for qid in search_res_batcher.question_ids:
+            self.tl.log(40000, qid, 0, 0)
             
-        self.model_worker.push_to_pending_batches(query_batcher)
+        self.model_worker.push_to_pending_batches(search_res_batcher)
 
 
     def __del__(self):
         '''
         Destructor
         '''
-        print(f"Encoder UDL destructor")
+        print(f"Loader UDL destructor")
         if self.model_worker:
             self.model_worker.signal_stop()
             self.model_worker.join()

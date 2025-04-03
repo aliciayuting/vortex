@@ -527,7 +527,7 @@ class SearchResultBatchManager:
         self.doc_ids.append(doc_ids)
         self.num_queries += 1
     
-    def serialize(self) -> np.ndarray:
+    def serialize(self, start_pos, end_pos) -> np.ndarray:
         """
         Serializes the batch with the following layout:
           [Header][Metadata records][Concatenated query texts][Flattened doc_ids block]
@@ -543,7 +543,7 @@ class SearchResultBatchManager:
           - doc_ids_position: uint32 (absolute offset to the doc_ids for this query)
           - doc_ids_count: uint32    (number of doc_ids for this query)
         """
-        count = self.num_queries
+        batch_size = end_pos - start_pos
         header_dtype = np.dtype([
             ('count', np.uint32),
             ('doc_ids_start', np.uint32)
@@ -555,27 +555,28 @@ class SearchResultBatchManager:
             ('doc_ids_position', np.uint32),
             ('doc_ids_count', np.uint32)
         ])
+        
+        count = batch_size
         header_size = header_dtype.itemsize
         metadata_size = count * metadata_dtype.itemsize
 
-        # Encode queries into UTF-8 bytes.
-        text_bytes_list = [q.encode('utf-8') for q in self.queries]
+        # Preprocess query texts for the selected range.
+        text_bytes_list = [q.encode('utf-8') for q in self.queries[start_pos:end_pos]]
         text_lengths = [len(b) for b in text_bytes_list]
         total_text_size = sum(text_lengths)
 
-        # Flatten doc_ids from each query.
+        # Preprocess and flatten doc_ids for the selected range.
         flattened_doc_ids = []
         doc_ids_counts = []
-        for docs in self.doc_ids:
+        for docs in self.doc_ids[start_pos:end_pos]:
             doc_ids_counts.append(len(docs))
             flattened_doc_ids.extend(docs)
         total_doc_ids_count = len(flattened_doc_ids)
-        # Assume each doc_id is stored as a 64-bit integer.
         doc_ids_dtype = np.uint64
         doc_ids_itemsize = np.dtype(doc_ids_dtype).itemsize
         total_doc_ids_size = total_doc_ids_count * doc_ids_itemsize
 
-        # Calculate offsets.
+        # Calculate the offsets.
         doc_ids_start = header_size + metadata_size + total_text_size
         total_size = header_size + metadata_size + total_text_size + total_doc_ids_size
 
@@ -596,11 +597,17 @@ class SearchResultBatchManager:
             text_len = text_lengths[i]
             doc_ids_pos = doc_ids_start + current_doc_ids_offset
             doc_count = doc_ids_counts[i]
-            metadata_array[i] = (self.question_ids[i], text_pos, text_len, doc_ids_pos, doc_count)
+            metadata_array[i] = (
+                self.question_ids[start_pos + i],
+                text_pos,
+                text_len,
+                doc_ids_pos,
+                doc_count
+            )
             current_text_offset += text_len
             current_doc_ids_offset += doc_count * doc_ids_itemsize
 
-        # Write the text block.
+        # Write the concatenated text block.
         current_text_offset = 0
         for b in text_bytes_list:
             start = text_block_start + current_text_offset
@@ -608,15 +615,16 @@ class SearchResultBatchManager:
             buffer[start:end] = np.frombuffer(b, dtype=np.uint8)
             current_text_offset += len(b)
 
-        # Write the doc_ids block.
+        # Write the flattened doc_ids block.
         if total_doc_ids_count > 0:
             doc_ids_array = np.array(flattened_doc_ids, dtype=doc_ids_dtype)
             doc_ids_bytes = doc_ids_array.view(np.uint8)
             start = doc_ids_start
             end = start + total_doc_ids_size
-            buffer[start:end] = doc_ids_bytes
+            buffer[start:end] = np.frombuffer(doc_ids_bytes, dtype=np.uint8)
 
         return buffer
+
 
     def deserialize(self, buffer: np.ndarray):
         """
@@ -678,3 +686,243 @@ class SearchResultBatchManager:
         print(f"Question IDs: {self.question_ids}")
         print(f"Doc IDs: {self.doc_ids}")
         
+# ------------------------    STEP E (Loader) UDL batcher  -------------------------
+
+class PendingLoaderDataBatcher:
+    def __init__(self, batch_size: int):
+        self.max_batch_size = batch_size
+        self.num_pending = 0
+        self.question_ids = []
+        self.queries = []
+        self.doc_ids = []
+    
+    def space_left(self):
+        return self.max_batch_size - self.num_pending
+    
+    def add_data(self, searchBatcher, start_pos):
+        num_to_add = min(self.space_left(), len(searchBatcher.question_ids) - start_pos)
+        end_pos = start_pos + num_to_add
+        self.question_ids.extend(searchBatcher.question_ids[start_pos:end_pos])
+        self.queries.extend(searchBatcher.queries[start_pos:end_pos])
+        self.doc_ids.extend(searchBatcher.doc_ids[start_pos:end_pos])
+        self.num_pending += num_to_add
+        return end_pos
+
+    def reset(self):
+        self.question_ids = []
+        self.queries = []
+        self.doc_ids = []
+        self.num_pending = 0
+
+class SearchResultBatchManager:
+    def __init__(self):
+        self.question_ids = []  # list[int]
+        self.queries = []       # list[str]
+        self.doc_list = []       # list[list[str]]
+        self.num_queries = 0
+        self._bytes: np.ndarray = np.array([], dtype=np.uint8)
+    
+
+    def add_result(self, question_id: int, query: str, doc_list: list[str]):
+        self.question_ids.append(question_id)
+        self.queries.append(query)
+        self.doc_list.append(doc_list)
+        self.num_queries += 1
+
+    def serialize(self, start_pos: int, end_pos: int) -> np.ndarray:
+        """
+        Serializes a slice of results (from start_pos to end_pos) into a contiguous buffer.
+        Assumes every query has the same number of documents.
+
+        Layout:
+          [Header][Query metadata][Document metadata][Fixed segment: question_ids]
+          [Variable segment: concatenated query texts][Variable segment: concatenated doc texts]
+
+        Header (8 bytes total):
+          - query_count: uint32 (number of queries)
+          - doc_count: uint32 (number of docs per query)
+
+        Query metadata (per query):
+          - query_text_offset: int64 (absolute offset in the buffer)
+          - query_text_length: int64
+
+        Document metadata (per document per query):
+          - doc_offset: int64 (absolute offset in the buffer)
+          - doc_length: int64
+
+        Fixed segment:
+          - question_ids as int64 (one per query)
+
+        The variable segment holds the actual query and document text data.
+        """
+        # ---- Select slice of data ----
+        selected_queries = self.queries[start_pos:end_pos]
+        selected_question_ids = self.question_ids[start_pos:end_pos]
+        selected_doc_lists = self.doc_list[start_pos:end_pos]
+        num_queries = len(selected_queries)
+        # Assume all queries have the same number of docs.
+        doc_count = len(selected_doc_lists[0]) if num_queries > 0 else 0
+
+        # ---- Define metadata types ----
+        header_dtype = np.dtype([("query_count", np.uint32), ("doc_count", np.uint32)])
+        header_size = header_dtype.itemsize  # 8 bytes
+
+        query_meta_dtype = np.dtype([("query_text_offset", np.int64), ("query_text_length", np.int64)])
+        query_meta_size = num_queries * query_meta_dtype.itemsize
+
+        doc_meta_dtype = np.dtype([("doc_offset", np.int64), ("doc_length", np.int64)])
+        total_doc_meta = num_queries * doc_count
+        doc_meta_size = total_doc_meta * doc_meta_dtype.itemsize
+
+        question_ids_size = num_queries * np.dtype(np.int64).itemsize
+
+        # ---- Process variable-length data (encode each string only once) ----
+        # For queries:
+        query_encodings = []
+        query_text_lengths = []
+        for q in selected_queries:
+            encoded = q.encode("utf-8")
+            # Optionally verify: assert len(encoded) == utf8_length(q)
+            query_encodings.append(encoded)
+            query_text_lengths.append(len(encoded))
+        total_query_text_size = sum(query_text_lengths)
+
+        # For documents:
+        doc_encodings_list = []   # List (per query) of lists (per document) of encoded bytes.
+        doc_lengths_list = []     # Corresponding lengths.
+        total_docs_size = 0
+        for docs in selected_doc_lists:
+            curr_encodings = []
+            curr_lengths = []
+            for doc in docs:
+                encoded = doc.encode("utf-8")
+                # Optionally verify: assert len(encoded) == utf8_length(doc)
+                curr_encodings.append(encoded)
+                curr_lengths.append(len(encoded))
+                total_docs_size += len(encoded)
+            doc_encodings_list.append(curr_encodings)
+            doc_lengths_list.append(curr_lengths)
+
+        # ---- Compute segment offsets ----
+        # Fixed segment: header, query metadata, doc metadata, question_ids.
+        fixed_segment_size = header_size + query_meta_size + doc_meta_size + question_ids_size
+        # Variable segments follow:
+        query_text_block_start = fixed_segment_size
+        docs_block_start = query_text_block_start + total_query_text_size
+
+        total_size = fixed_segment_size + total_query_text_size + total_docs_size
+        buffer = np.zeros(total_size, dtype=np.uint8)
+
+        # ---- Write Metadata First ----
+        offset = 0
+
+        # Write header.
+        header_array = np.frombuffer(buffer[offset:offset + header_size], dtype=header_dtype)
+        header_array[0] = (num_queries, doc_count)
+        offset += header_size
+
+        # Write query metadata.
+        query_meta_view = np.frombuffer(buffer[offset: offset + query_meta_size], dtype=query_meta_dtype)
+        current_q_offset = 0
+        for i in range(num_queries):
+            query_meta_view[i] = (query_text_block_start + current_q_offset, query_text_lengths[i])
+            current_q_offset += query_text_lengths[i]
+        offset += query_meta_size
+
+        # Write document metadata.
+        doc_meta_view = np.frombuffer(buffer[offset: offset + doc_meta_size], dtype=doc_meta_dtype)
+        meta_idx = 0
+        current_d_offset = 0
+        for i in range(num_queries):
+            for j in range(doc_count):
+                doc_meta_view[meta_idx] = (docs_block_start + current_d_offset, doc_lengths_list[i][j])
+                current_d_offset += doc_lengths_list[i][j]
+                meta_idx += 1
+        offset += doc_meta_size
+
+        # Write fixed segment: question_ids.
+        qids_view = np.frombuffer(buffer[offset: offset + question_ids_size], dtype=np.int64)
+        qids_view[:] = selected_question_ids
+        offset += question_ids_size
+        # All metadata is now written.
+
+        # ---- Write Variable Data (Actual String Data) ----
+        # Write concatenated query texts.
+        var_ptr = query_text_block_start
+        for encoded in query_encodings:
+            end_ptr = var_ptr + len(encoded)
+            buffer[var_ptr:end_ptr] = np.frombuffer(encoded, dtype=np.uint8)
+            var_ptr = end_ptr
+
+        # Write concatenated document texts.
+        var_ptr = docs_block_start
+        for encodings in doc_encodings_list:
+            for encoded in encodings:
+                end_ptr = var_ptr + len(encoded)
+                buffer[var_ptr:end_ptr] = np.frombuffer(encoded, dtype=np.uint8)
+                var_ptr = end_ptr
+
+        self._bytes = buffer
+        return buffer
+
+    def deserialize(self, data: np.ndarray):
+        """
+        Deserializes the given buffer and populates self.question_ids, self.queries, and self.doc_list.
+        Expects the layout as produced by serialize.
+        """
+        self._bytes = data
+        header_dtype = np.dtype([("query_count", np.uint32), ("doc_count", np.uint32)])
+        header_size = header_dtype.itemsize
+        header = np.frombuffer(data[:header_size], dtype=header_dtype)[0]
+        num_queries = int(header["query_count"])
+        doc_count = int(header["doc_count"])
+
+        query_meta_dtype = np.dtype([("query_text_offset", np.int64), ("query_text_length", np.int64)])
+        query_meta_size = num_queries * query_meta_dtype.itemsize
+
+        doc_meta_dtype = np.dtype([("doc_offset", np.int64), ("doc_length", np.int64)])
+        total_doc_meta = num_queries * doc_count
+        doc_meta_size = total_doc_meta * doc_meta_dtype.itemsize
+
+        question_ids_size = num_queries * np.dtype(np.int64).itemsize
+        fixed_segment_size = header_size + query_meta_size + doc_meta_size + question_ids_size
+
+        # Read metadata.
+        query_meta_view = np.frombuffer(data[header_size: header_size + query_meta_size], dtype=query_meta_dtype)
+        doc_meta_view = np.frombuffer(data[header_size + query_meta_size: header_size + query_meta_size + doc_meta_size], dtype=doc_meta_dtype)
+        qids_start = header_size + query_meta_size + doc_meta_size
+        question_ids_view = np.frombuffer(data[qids_start: qids_start + question_ids_size], dtype=np.int64)
+        self.question_ids = question_ids_view.tolist()
+
+        # Variable segments: query texts.
+        query_text_block_start = fixed_segment_size
+        self.queries = []
+        for i in range(num_queries):
+            offset = int(query_meta_view[i]["query_text_offset"])
+            length = int(query_meta_view[i]["query_text_length"])
+            q_bytes = memoryview(data)[offset: offset + length].tobytes()
+            self.queries.append(q_bytes.decode("utf-8"))
+
+        total_query_text_size = sum(int(query_meta_view[i]["query_text_length"]) for i in range(num_queries))
+        docs_block_start = query_text_block_start + total_query_text_size
+
+        # Variable segments: document texts.
+        self.doc_list = []
+        for i in range(num_queries):
+            curr_docs = []
+            for j in range(doc_count):
+                idx = i * doc_count + j
+                offset = int(doc_meta_view[idx]["doc_offset"])
+                length = int(doc_meta_view[idx]["doc_length"])
+                d_bytes = memoryview(data)[offset: offset + length].tobytes()
+                curr_docs.append(d_bytes.decode("utf-8"))
+            self.doc_list.append(curr_docs)
+        
+        self.num_queries = num_queries
+
+    def print_info(self):
+        print(f"SearchResultBatchManager: {self.num_queries} queries")
+        for i in range(self.num_queries):
+            print(f"Query {i} (ID {self.question_ids[i]}): {self.queries[i]}")
+            print(f"  Docs ({len(self.doc_list[i])}): {self.doc_list[i]}")
+            

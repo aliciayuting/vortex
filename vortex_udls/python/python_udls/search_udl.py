@@ -20,14 +20,32 @@ SEARCH_NEXT_UDL_PREFIX = "/get_doc/"
 SEARCH_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 SEARCH_NEXT_UDL_SUBGROUP_INDEX = 0
 
+class DocumentLoader:
+    def __init__(self, doc_dir):
+        self.doc_dir = doc_dir
+        self.doc_list = None
+        
+    def load_docs(self):
+        with open(self.doc_dir, 'rb') as file:
+            self.doc_list = np.load(file)
+
+    def get_doc_list(self, doc_ids) -> list:
+        if self.doc_list is None:
+            self.load_docs()
+        result = []
+        for doc_id in doc_ids:
+            result.append(self.doc_list[doc_id])
+        return result
+    
 
 class FaissSearcher:
-    def __init__(self, device: str, index_dir: str):
+    def __init__(self, device: str, index_dir: str, topk: int = 5):
         self.cpu_index = None
         self.res = None
         self.gpu_index = None
         self.device = device
         self.index_dir = index_dir
+        self.topk = topk
         
     def load_model(self):
         self.cpu_index = faiss.read_index(self.index_dir)
@@ -39,7 +57,7 @@ class FaissSearcher:
     def searcher_exec(self, embeddings: np.ndarray) -> np.ndarray:
         if self.gpu_index is None:
             self.load_model()
-        _, I = self.gpu_index.search(embeddings, self.parent.topk)
+        _, I = self.gpu_index.search(embeddings, self.topk)
         return I
 
 
@@ -53,7 +71,7 @@ class SearchWorker(ExecWorker):
         self.max_exe_batch_size = self.parent.max_exe_batch_size
         self.batch_time_us = self.parent.batch_time_us
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.searcher = FaissSearcher(self.parent.device, self.parent.index_dir)
+        self.searcher = FaissSearcher(self.parent.device, self.parent.index_dir, self.parent.topk)
 
     def create_pending_manager(self):
         return PendingSearchDataBatcher(self.max_exe_batch_size, self.parent.emb_dim)
@@ -108,7 +126,7 @@ class SearchEmitWorker(EmitWorker):
         self.next_udl_subgroup_type = SEARCH_NEXT_UDL_PREFIX
         self.next_udl_subgroup_index = SEARCH_NEXT_UDL_SUBGROUP_INDEX
         self.next_udl_shards = self.parent.next_udl_shards
-        self.next_udl_prefix = SEARCH_NEXT_UDL_PREFIX
+        self.next_udl_prefixes = [SEARCH_NEXT_UDL_PREFIX]
         
         
         
