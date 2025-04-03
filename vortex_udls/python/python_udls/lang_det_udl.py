@@ -3,64 +3,81 @@ import json
 import numpy as np
 from typing import Any
 import threading
-import faiss
-import pickle
+import torch
 
 from derecho.cascade.udl import UserDefinedLogic
 from derecho.cascade.member_client import ServiceClientAPI
 from derecho.cascade.member_client import TimestampLogger
 
-from pipeline2_serialize_utils import (PendingLoaderDataBatcher,
-                                       SearchResultBatchManager,
-                                       DocResultBatchManager)
-
+from pipeline2_serialize_utils import (DocResultBatchManager, 
+                                       PendingCheckDataBatcher,
+                                       LangDetResultBatchManager)
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from workers_util import ExecWorker, EmitWorker
 
 
-DOC_NEXT_UDL_PREFIXES = ["/text_check/" , "/lang_det/"]
-DOC_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
-DOC_NEXT_UDL_SUBGROUP_INDEX = 0
+LANG_NEXT_UDL_PREFIX = "/aggregate/lang_"
+LANG_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
+LANG_NEXT_UDL_SUBGROUP_INDEX = 0
 
 
-class DocumentLoader:
-    def __init__(self, doc_dir):
-        self.doc_dir = doc_dir
-        self.doc_list = None
+class LanguageDetector:
+    def __init__(self, device: str, model_name: str):
+        self.model = None
+        self.tokenizer = None
+        self.device = device
+        self.model_name = model_name
         
-    def load_docs(self):
-        with open(self.doc_dir , 'rb') as file:
-            self.doc_list = np.load(file)
+    def load_model(self):
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name).to(self.device)
+
+    def model_exec(self, texts: list[str]) -> np.ndarray:
+        if self.model is None:
+            self.load_model()
+        inputs = self.tokenizer(texts,
+                       return_tensors='pt', padding=True, truncation=True).to(self.device)
+        with torch.no_grad():
+            logits = self.model(**inputs)
+        preds = torch.softmax(logits, dim=-1)
+        # Map raw predictions to languages
+        id2lang = self.model.config.id2label
+        vals, idxs = torch.max(preds, dim=1)
+        # print({id2lang[k.item()]: v.item() for k, v in zip(idxs, vals)})
+        languages = []
+        for k, v in zip(idxs, vals):
+            lang = id2lang[k.item()]
+            languages.append(lang)
+        return languages
+    
+    
+    def docs_detect(self, doc_list: list[list[str]]) -> list[list[float]]:
+        flattened_doc_list = [item for sublist in doc_list for item in sublist]
+        lang_list = self.model_exec(flattened_doc_list)
+        # Reshape the languages list to match the original doc_list structure
+        reshaped_languages = []
+        start = 0
+        for sublist in doc_list:
+            end = start + len(sublist)
+            reshaped_languages.append(lang_list[start:end])
+            start = end
+        return reshaped_languages
 
 
-    def get_doc_list(self, doc_ids_list) -> list:
-        '''
-        doc_ids_list: list of list of doc_ids
-        '''
-        if self.doc_list is None:
-            self.load_docs()
-        doc_lists = []
-        for doc_ids in doc_ids_list:
-            cur_docs = []
-            for doc_id in doc_ids:
-                cur_docs.append(self.doc_list[doc_id])
-            doc_lists.append(cur_docs)
-        return doc_lists
 
-
-
-class DocWorker(ExecWorker):
+class LangDetWorker(ExecWorker):
     '''
-    This is a batch executor for faiss searcher execution
+    This is a batch executor for text checker execution
     '''
     def __init__(self, parent, thread_id):
         super().__init__(parent, thread_id)
         self.max_exe_batch_size = self.parent.max_exe_batch_size
         self.batch_time_us = self.parent.batch_time_us
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.doc_loader = DocumentLoader(self.parent.doc_dir)
+        self.lang_detect_model = LanguageDetector(self.parent.device, self.parent.model_name)
 
     def create_pending_manager(self):
-        return PendingLoaderDataBatcher(self.max_exe_batch_size)
+        return PendingCheckDataBatcher(self.max_exe_batch_size)
 
     def main_loop(self):
         batch = None
@@ -79,70 +96,69 @@ class DocWorker(ExecWorker):
                         self.next_batch = (self.next_batch + 1) % len(self.pending_batches)
                     self.new_space_available = True
                     self.cv.notify()
-                    print("found batch to exectute")
             if not self.running:
                 break
             if self.current_batch == -1 or not batch:
                 continue
             # Execute the batch
             for qid in batch.question_ids[:batch.num_pending]:
-                self.parent.tl.log(40030, qid, 0, batch.num_pending)
-            doc_lists = self.doc_loader.get_doc_list(batch.doc_ids[:batch.num_pending])
+                self.parent.tl.log(60030, qid, 0, batch.num_pending)
+            languages = self.lang_detect_model.docs_detect(batch.doc_list[:batch.num_pending])
             for qid in batch.question_ids[:batch.num_pending]:
-                self.parent.tl.log(40031, qid, 0, batch.num_pending)
+                self.parent.tl.log(60031, qid, 0, batch.num_pending)
             self.parent.emit_worker.add_to_buffer(batch,
-                                                  doc_lists, 
+                                                  languages, 
                                                   batch.num_pending)
             self.pending_batches[self.current_batch].reset()
 
 
 
-class DocEmitWorker(EmitWorker):
+class LangDetEmitWorker(EmitWorker):
     '''
-    This is a batcher for SearcherUDL to emit to text check and language detection UDLs
+    This is a batcher for detectorUDL to emit to aggregate UDL
     '''
     def __init__(self, parent, thread_id):
         super().__init__(parent, thread_id)
         
-        self.emit_log_flag = 40100
+        self.emit_log_flag = 60100
         self.max_emit_batch_size = self.parent.max_emit_batch_size
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.next_udl_subgroup_type = DOC_NEXT_UDL_SUBGROUP_TYPE
-        self.next_udl_subgroup_index = DOC_NEXT_UDL_SUBGROUP_INDEX
+        self.next_udl_subgroup_type = LANG_NEXT_UDL_SUBGROUP_TYPE
+        self.next_udl_subgroup_index = LANG_NEXT_UDL_SUBGROUP_INDEX
         self.next_udl_shards = self.parent.next_udl_shards
-        self.next_udl_prefixes = DOC_NEXT_UDL_PREFIXES
+        self.next_udl_prefixes = [LANG_NEXT_UDL_PREFIX]
         
         
         
     def create_batch_manager(self):
         # Return an instance of the batch manager that this child class needs.
-        return DocResultBatchManager()
+        return LangDetResultBatchManager()
 
 
-    def add_to_buffer(self, batch, doc_lists, num_queries):
+    def add_to_buffer(self, batch, languages, num_queries):
         '''
         pass by object reference to avoid deep-copy
         '''
         question_ids = batch.question_ids[:num_queries]
-        queries = batch.queries[:num_queries]
         
         with self.cv:
             # use question_id to determine which shard to send to
             for i in range(num_queries):
                 shard_pos = question_ids[i] % len(self.parent.next_udl_shards)
                 self.send_buffer[shard_pos].add_result(question_ids[i],  
-                                                       queries[i],
-                                                       doc_lists[i])
+                                                       languages[i])
             self.cv.notify()
         
 
 
-class DocUDL(UserDefinedLogic):
+class LangDetUDL(UserDefinedLogic):
     def __init__(self, conf_str: str):
         self.conf: dict[str, Any] = json.loads(conf_str)
         self.capi = ServiceClientAPI()
         self.tl = TimestampLogger()
-        self.doc_dir = self.conf["doc_dir"]
+        self.device = self.conf["device"]
+        self.model_name = self.conf["model_name"]
+        # Note: batch size here is topk(5) * max_exe_batch_size, 
         self.max_exe_batch_size = int(self.conf.get("max_exe_batch_size", 16))
         self.batch_time_us = int(self.conf.get("batch_time_us", 1000))
         self.max_emit_batch_size = int(self.conf.get("max_emit_batch_size", 5))
@@ -158,9 +174,9 @@ class DocUDL(UserDefinedLogic):
         Start the worker threads
         '''
         if not self.model_worker:
-            self.model_worker = DocWorker(self, 1)
+            self.model_worker = LangDetWorker(self, 1)
             self.model_worker.start()
-            self.emit_worker = DocEmitWorker(self, 2)
+            self.emit_worker = LangDetEmitWorker(self, 2)
             self.emit_worker.start()
 
     def ocdpo_handler(self, **kwargs):
@@ -168,22 +184,21 @@ class DocUDL(UserDefinedLogic):
         if not self.model_worker:
             self.start_threads()
         data = kwargs["blob"]
-        print("Doc udl ocdpo")
         
-        search_res_batcher = SearchResultBatchManager()
-        search_res_batcher.deserialize(data)
+        doc_result_batcher = DocResultBatchManager()
+        doc_result_batcher.deserialize(data)
         
-        for qid in search_res_batcher.question_ids:
-            self.tl.log(40000, qid, 0, 0)
+        for qid in doc_result_batcher.question_ids:
+            self.tl.log(60000, qid, 0, 0)
             
-        self.model_worker.push_to_pending_batches(search_res_batcher)
+        self.model_worker.push_to_pending_batches(doc_result_batcher)
 
 
     def __del__(self):
         '''
         Destructor
         '''
-        print(f"Loader UDL destructor")
+        print(f"Detector UDL destructor")
         if self.model_worker:
             self.model_worker.signal_stop()
             self.model_worker.join()

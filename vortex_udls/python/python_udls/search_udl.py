@@ -20,23 +20,7 @@ SEARCH_NEXT_UDL_PREFIX = "/get_doc/"
 SEARCH_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 SEARCH_NEXT_UDL_SUBGROUP_INDEX = 0
 
-class DocumentLoader:
-    def __init__(self, doc_dir):
-        self.doc_dir = doc_dir
-        self.doc_list = None
-        
-    def load_docs(self):
-        with open(self.doc_dir, 'rb') as file:
-            self.doc_list = np.load(file)
 
-    def get_doc_list(self, doc_ids) -> list:
-        if self.doc_list is None:
-            self.load_docs()
-        result = []
-        for doc_id in doc_ids:
-            result.append(self.doc_list[doc_id])
-        return result
-    
 
 class FaissSearcher:
     def __init__(self, device: str, index_dir: str, topk: int = 5):
@@ -101,9 +85,7 @@ class SearchWorker(ExecWorker):
             # Execute the batch
             for qid in batch.question_ids[:batch.num_pending]:
                 self.parent.tl.log(30030, qid, 0, batch.num_pending)
-            print("about to search")
             I = self.searcher.searcher_exec(batch.embeddings[:batch.num_pending])
-            print(f"I is {I}")
             for qid in batch.question_ids[:batch.num_pending]:
                 self.parent.tl.log(30031, qid, 0, batch.num_pending)
             self.parent.emit_worker.add_to_buffer(batch,
@@ -115,7 +97,7 @@ class SearchWorker(ExecWorker):
 
 class SearchEmitWorker(EmitWorker):
     '''
-    This is a batcher for SearcherUDL to emit to centroids search UDL
+    This is a batcher for SearcherUDL to emit to Doc retrieve UDL
     '''
     def __init__(self, parent, thread_id):
         super().__init__(parent, thread_id)
@@ -123,7 +105,7 @@ class SearchEmitWorker(EmitWorker):
         self.emit_log_flag = 30100
         self.max_emit_batch_size = self.parent.max_emit_batch_size
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.next_udl_subgroup_type = SEARCH_NEXT_UDL_PREFIX
+        self.next_udl_subgroup_type = SEARCH_NEXT_UDL_SUBGROUP_TYPE
         self.next_udl_subgroup_index = SEARCH_NEXT_UDL_SUBGROUP_INDEX
         self.next_udl_shards = self.parent.next_udl_shards
         self.next_udl_prefixes = [SEARCH_NEXT_UDL_PREFIX]

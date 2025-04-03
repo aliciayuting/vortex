@@ -98,6 +98,25 @@
                         "next_udl_shards":[1]
                     }],
                 "destinations": [{"/aggregate":"put"}]
+            },
+            {
+                "pathname": "/lang_det",
+                "shard_dispatcher_list": ["one"],
+                "user_defined_logic_list": ["6cfe8f64-3a1d-11ed-8e7e-0242ac110006"],
+                "user_defined_logic_stateful_list": ["singlethreaded"],
+                "user_defined_logic_config_list": [
+                    {
+                        "python_path":["python_udls"],
+                        "module":"lang_det_udl",
+                        "entry_class":"LangDetUDL",
+                        "model_name": "apluca/xlm-roberta-base-language-detection",
+                        "device": "cuda",
+                        "max_exe_batch_size":10,
+                        "batch_time_us":1000,
+                        "max_emit_batch_size":10,
+                        "next_udl_shards":[1]
+                    }],
+                "destinations": [{"/aggregate":"put"}]
             }
         ]
     },

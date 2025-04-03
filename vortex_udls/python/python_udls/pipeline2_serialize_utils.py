@@ -714,7 +714,7 @@ class PendingLoaderDataBatcher:
         self.doc_ids = []
         self.num_pending = 0
 
-class SearchResultBatchManager:
+class DocResultBatchManager:
     def __init__(self):
         self.question_ids = []  # list[int]
         self.queries = []       # list[str]
@@ -865,6 +865,7 @@ class SearchResultBatchManager:
         self._bytes = buffer
         return buffer
 
+
     def deserialize(self, data: np.ndarray):
         """
         Deserializes the given buffer and populates self.question_ids, self.queries, and self.doc_list.
@@ -926,3 +927,288 @@ class SearchResultBatchManager:
             print(f"Query {i} (ID {self.question_ids[i]}): {self.queries[i]}")
             print(f"  Docs ({len(self.doc_list[i])}): {self.doc_list[i]}")
             
+
+# ------------------------    STEP F (Text Checker) UDL batcher  -------------------------
+class PendingCheckDataBatcher:
+    def __init__(self, batch_size: int):
+        self.max_batch_size = batch_size
+        self.num_pending = 0
+        self.question_ids = []
+        # self.queries = []
+        self.doc_list = []  # list[list[str]]
+        self.doc_per_query = 0
+        
+
+    def space_left(self):
+        return self.max_batch_size - self.num_pending
+
+    def add_data(self, docBatcher, start_pos):
+        num_to_add = min(self.space_left(), len(docBatcher.question_ids) - start_pos)
+        end_pos = start_pos + num_to_add
+        # Assume all queries have the same number of docs.
+        if len(self.doc_list) == 0:
+            self.doc_per_query = len(docBatcher.doc_list[start_pos])
+        self.question_ids.extend(docBatcher.question_ids[start_pos:end_pos])
+        # self.queries.extend(docBatcher.queries[start_pos:end_pos])
+        self.doc_list.extend(docBatcher.doc_list[start_pos:end_pos])
+        self.num_pending += num_to_add
+        return end_pos
+
+    def reset(self):
+        self.question_ids = []
+        # self.queries = []
+        self.doc_list = []
+        self.num_pending = 0
+    
+class TextCheckResultBatchManager:
+    """
+    Manages the results of the text checking process.
+    The output layout is:
+        [Header][question ids][Concatenated list of probability that the corresponding doc is harmful]
+    
+    Header (dtype header_type):
+        - num_queries: uint32, the number of queries
+        - doc_count: uint32, the number of documents per query
+    
+    Metadata (dtype metadata_type) for each query:
+        - question_id: uint64
+    """
+    def __init__(self):
+        self.question_ids = []
+        self.doc_probabilities = [] # list[list[float]] for each question_id there are several probabilities for the docs related to it
+        self.num_queries = 0
+        self.doc_count = 0
+        self._bytes: np.ndarray = np.array([], dtype=np.uint8)
+        
+    def add_result(self, question_id: int, probabilities: list[float]):
+        """
+        Add one result to the batch.
+        It is assumed that each embedding is a numpy array of type float32
+        with either shape (d,) or (1, d) and that all embeddings share the same dimension.
+        """
+        self.question_ids.append(question_id)
+        self.doc_probabilities.append(probabilities)
+        self.num_queries += 1
+        self.doc_count = len(probabilities)
+        # Check if all doc counts are the same
+        if self.doc_count != 0 and len(probabilities) != self.doc_count:
+            raise ValueError("All doc counts must be the same")
+    
+    def serialize(self, start_pos, end_pos) -> np.ndarray:
+        """
+        Serializes the following fields into a contiguous byte buffer:
+          - Header: 4 bytes for num_queries (uint32) and 4 bytes for doc_count (uint32).
+          - Fixed segments:
+            * question_ids: (num_queries,) int64.
+            * doc_probabilities: (num_queries * doc_count,) float32.
+        """
+        # Select the desired slice.
+        selected_question_ids = self.question_ids[start_pos:end_pos]
+        selected_doc_probs = self.doc_probabilities[start_pos:end_pos]
+        num_q = len(selected_question_ids)
+        # doc_count is assumed uniform.
+        d_count = self.doc_count
+        
+        # Define header.
+        header_dtype = np.dtype([("num_queries", np.uint32), ("doc_count", np.uint32)])
+        header_size = header_dtype.itemsize  # 8 bytes
+        
+        # Question IDs fixed segment.
+        qids_dtype = np.dtype(np.int64)
+        question_ids_size = num_q * qids_dtype.itemsize
+        
+        # Document probabilities fixed segment.
+        doc_probs_dtype = np.dtype(np.float32)
+        doc_probs_size = num_q * d_count * doc_probs_dtype.itemsize
+        
+        # Total size of the serialized buffer.
+        total_size = header_size + question_ids_size + doc_probs_size
+        buffer = np.zeros(total_size, dtype=np.uint8)
+        
+        offset = 0
+        # Write Header.
+        header_arr = np.frombuffer(buffer[offset:offset+header_size], dtype=header_dtype)
+        header_arr[0] = (num_q, d_count)
+        offset += header_size
+        
+        # Write Question IDs.
+        qids_arr = np.frombuffer(buffer[offset:offset+question_ids_size], dtype=qids_dtype)
+        qids_arr[:] = np.array(selected_question_ids, dtype=np.int64)
+        offset += question_ids_size
+        
+        # Write Document Probabilities.
+        # Flatten the list of lists into a single list in row-major order.
+        flat_doc_probs = [p for probs in selected_doc_probs for p in probs]
+        doc_probs_arr = np.frombuffer(buffer[offset:offset+doc_probs_size], dtype=doc_probs_dtype)
+        doc_probs_arr[:] = np.array(flat_doc_probs, dtype=np.float32)
+        
+        self._bytes = buffer
+        return buffer
+    
+    def deserialize(self, data: np.ndarray):
+        """
+        Deserializes the given buffer and populates self.question_ids and self.doc_probabilities.
+        Expects the layout as produced by serialize.
+        """
+        self._bytes = data
+        header_dtype = np.dtype([("num_queries", np.uint32), ("doc_count", np.uint32)])
+        header_size = header_dtype.itemsize
+        header = np.frombuffer(data[:header_size], dtype=header_dtype)[0]
+        num_q = int(header["num_queries"])
+        d_count = int(header["doc_count"])
+        
+        # Read question IDs.
+        qids_dtype = np.dtype(np.int64)
+        qids_size = num_q * qids_dtype.itemsize
+        qids_start = header_size
+        qids_arr = np.frombuffer(data[qids_start:qids_start+qids_size], dtype=qids_dtype)
+        self.question_ids = qids_arr.tolist()
+        
+        # Read document probabilities.
+        doc_probs_dtype = np.dtype(np.float32)
+        doc_probs_size = num_q * d_count * doc_probs_dtype.itemsize
+        doc_probs_start = qids_start + qids_size
+        doc_probs_arr = np.frombuffer(data[doc_probs_start:doc_probs_start+doc_probs_size], dtype=doc_probs_dtype)
+        flat_probs = doc_probs_arr.tolist()
+        
+        # Reshape into list of lists.
+        self.doc_probabilities = []
+        for i in range(num_q):
+            start_idx = i * d_count
+            self.doc_probabilities.append(flat_probs[start_idx:start_idx + d_count])
+        
+        self.num_queries = num_q
+        self.doc_count = d_count
+        
+    def print_info(self):
+        print(f"TextCheckResultBatchManager: {self.num_queries} queries, {self.doc_count} docs per query")
+        for i in range(self.num_queries):
+            print(f"Query ID {self.question_ids[i]}: probabilities = {self.doc_probabilities[i]}")
+
+# --------------------------    STEP G (Language Detection) UDL batcher  -------------------------
+class LangDetResultBatchManager:
+    def __init__(self):
+        self.question_ids = []
+        self.lang_codes = [] # list[list[str]] for each question_id there are several languages related to it
+        self.num_queries = 0
+        self.lang_count = 0
+
+    def add_result(self, question_id: int, lang_codes: list[str]):
+        """
+        Add one result to the batch.
+        It is assumed that each embedding is a numpy array of type float32
+        with either shape (d,) or (1, d) and that all embeddings share the same dimension.
+        """
+        self.question_ids.append(question_id)
+        self.lang_codes.append(lang_codes)
+        self.num_queries += 1
+        self.lang_count = len(lang_codes)
+        # Check if all lang counts are the same
+        if self.lang_count != 0 and len(lang_codes) != self.lang_count:
+            raise ValueError("All lang counts must be the same")
+    
+
+    def serialize(self) -> np.ndarray:
+        """
+        Serializes the batch into a buffer:
+        - Header: num_queries (uint32), lang_count (uint32)
+        - Metadata: for each language code, two int64 values (offset, length)
+        - Fixed segment: question_ids (int64)
+        - Variable segment: UTF-8 encoded language code strings
+        """
+        batch_size = self.num_queries
+        if batch_size == 0:
+            return np.array([], dtype=np.uint8)
+        
+        # Types and sizes
+        header_dtype = np.dtype([("num_queries", np.uint32), ("lang_count", np.uint32)])
+        meta_dtype = np.dtype([("offset", np.int64), ("length", np.int64)])
+        header_size = header_dtype.itemsize
+        meta_size = batch_size * self.lang_count * meta_dtype.itemsize
+        qid_size = batch_size * np.dtype(np.int64).itemsize
+
+        # First pass: compute lengths and total variable segment size
+        code_lengths = []
+        total_text_bytes = 0
+        for query_langs in self.lang_codes:
+            for lang_code in query_langs:
+                l = utf8_length(lang_code)
+                code_lengths.append(l)
+                total_text_bytes += l
+
+        total_size = header_size + meta_size + qid_size + total_text_bytes
+        buffer = np.empty(total_size, dtype=np.uint8)
+
+        # Segment positions
+        meta_pos = header_size
+        qid_pos = meta_pos + meta_size
+        text_pos = qid_pos + qid_size
+
+        # Write header
+        np.frombuffer(buffer[:header_size], dtype=header_dtype)[0] = (batch_size, self.lang_count)
+
+        # Prepare views
+        meta_view = np.frombuffer(buffer[meta_pos:meta_pos + meta_size], dtype=meta_dtype)
+        qid_view = np.frombuffer(buffer[qid_pos:qid_pos + qid_size], dtype=np.int64)
+        qid_view[:] = self.question_ids
+
+        # Second pass: write UTF-8 encoded strings and record offsets
+        write_ptr = text_pos
+        meta_index = 0
+        for query_langs in self.lang_codes:
+            for lang_code in query_langs:
+                encoded = lang_code.encode("utf-8")
+                length = len(encoded)
+                meta_view[meta_index] = (write_ptr, length)
+                buffer[write_ptr:write_ptr + length] = np.frombuffer(encoded, dtype=np.uint8)
+                write_ptr += length
+                meta_index += 1
+
+        return buffer
+
+    def deserialize(self, data: np.ndarray):
+        """
+        Deserializes the buffer created by `serialize()`
+        """
+        header_dtype = np.dtype([("num_queries", np.uint32), ("lang_count", np.uint32)])
+        meta_dtype = np.dtype([("offset", np.int64), ("length", np.int64)])
+        qid_dtype = np.dtype(np.int64)
+
+        # Read header
+        header = np.frombuffer(data[:header_dtype.itemsize], dtype=header_dtype)[0]
+        num_queries = int(header["num_queries"])
+        lang_count = int(header["lang_count"])
+
+        # Compute segment offsets
+        header_size = header_dtype.itemsize
+        meta_size = num_queries * lang_count * meta_dtype.itemsize
+        qid_size = num_queries * qid_dtype.itemsize
+        meta_start = header_size
+        qid_start = meta_start + meta_size
+        text_start = qid_start + qid_size
+
+        # Views
+        meta_view = np.frombuffer(data[meta_start:meta_start + meta_size], dtype=meta_dtype)
+        qid_view = np.frombuffer(data[qid_start:qid_start + qid_size], dtype=qid_dtype)
+
+        # Restore values
+        self.question_ids = qid_view.tolist()
+        self.lang_codes = []
+        for i in range(num_queries):
+            query_langs = []
+            for j in range(lang_count):
+                meta_index = i * lang_count + j
+                offset = int(meta_view[meta_index]["offset"])
+                length = int(meta_view[meta_index]["length"])
+                s = memoryview(data)[offset:offset + length].tobytes().decode("utf-8")
+                query_langs.append(s)
+            self.lang_codes.append(query_langs)
+        
+        self.num_queries = num_queries
+        self.lang_count = lang_count
+        
+    def print_info(self):
+        print(f"LangDetResultBatchManager: {self.num_queries} queries, {self.lang_count} languages per query")
+        for i in range(self.num_queries):
+            print(f"Query ID {self.question_ids[i]}: languages = {self.lang_codes[i]}")
+    
