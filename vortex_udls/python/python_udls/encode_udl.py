@@ -28,6 +28,7 @@ class TextEncoder:
         
     def load_model(self):
         self.encoder = FlagModel(self.model_name, devices=self.device)
+        print("Text Encoder model loaded")
 
     def encoder_exec(self, query_list: list[str]) -> np.ndarray:
         # Generate embedding dimesion of 384

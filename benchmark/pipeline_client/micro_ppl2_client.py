@@ -13,8 +13,8 @@ from torch.utils.data import DataLoader
 
 
 BS = 1
-NUM_BATCHES = 1
-SEND_INTERVAL = 2  # in s
+NUM_BATCHES = 50
+SEND_INTERVAL = 1  # in s
 FIRST_UDL_PREFIX = "/speech_to_text/"
 FIRST_UDL_SHARDS = [0]
 FIRST_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
@@ -77,7 +77,7 @@ def main(argv):
                 subgroup_index=FIRST_UDL_SUBGROUP_INDEX,
                 shard_index=0,
                 message_id=batch_idx)
-        print(f"Put key:{key} \n    value:{audio_query_batch.question_ids} to Cascade.")
+        # print(f"Put key:{key} \n    value:{audio_query_batch.question_ids} to Cascade.")
 
         if batch_idx == 10:
             time.sleep(20)

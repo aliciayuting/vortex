@@ -180,8 +180,8 @@ class EmitWorker(ABC):
                     self.parent.sent_msg_count += 1
                     num_sent += serialize_batch_size
                     self.sent_batch_counter += 1
-                    print(f"sent {new_key} to next UDL")
-                batch_manager.print_info()
+                #     print(f"sent {new_key} to next UDL")
+                # batch_manager.print_info()
                 
     
     def main_loop(self):

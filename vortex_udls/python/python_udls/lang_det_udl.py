@@ -31,6 +31,7 @@ class LanguageDetector:
     def load_model(self):
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name).to(self.device)
+        print("Language Detection model loaded")
 
     def model_exec(self, texts: list[str]) -> np.ndarray:
         if self.model is None:
@@ -38,7 +39,7 @@ class LanguageDetector:
         inputs = self.tokenizer(texts,
                        return_tensors='pt', padding=True, truncation=True).to(self.device)
         with torch.no_grad():
-            logits = self.model(**inputs)
+            logits = self.model(**inputs).logits
         preds = torch.softmax(logits, dim=-1)
         # Map raw predictions to languages
         id2lang = self.model.config.id2label

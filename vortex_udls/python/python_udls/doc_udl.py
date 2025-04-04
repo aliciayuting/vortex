@@ -17,7 +17,7 @@ from pipeline2_serialize_utils import (PendingLoaderDataBatcher,
 from workers_util import ExecWorker, EmitWorker
 
 
-DOC_NEXT_UDL_PREFIXES = ["/text_check/" , "/lang_det/"]
+DOC_NEXT_UDL_PREFIXES = ["/text_check/" , "/lang_det/", "/aggregate/doc_"]
 DOC_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 DOC_NEXT_UDL_SUBGROUP_INDEX = 0
 
@@ -30,6 +30,7 @@ class DocumentLoader:
     def load_docs(self):
         with open(self.doc_dir , 'rb') as file:
             self.doc_list = np.load(file)
+        print("Document list loaded")
 
 
     def get_doc_list(self, doc_ids_list) -> list:
@@ -79,7 +80,6 @@ class DocWorker(ExecWorker):
                         self.next_batch = (self.next_batch + 1) % len(self.pending_batches)
                     self.new_space_available = True
                     self.cv.notify()
-                    print("found batch to exectute")
             if not self.running:
                 break
             if self.current_batch == -1 or not batch:
@@ -168,7 +168,6 @@ class DocUDL(UserDefinedLogic):
         if not self.model_worker:
             self.start_threads()
         data = kwargs["blob"]
-        print("Doc udl ocdpo")
         
         search_res_batcher = SearchResultBatchManager()
         search_res_batcher.deserialize(data)

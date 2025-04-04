@@ -43,6 +43,7 @@ class AudioRecognition:
         self.kwargs["data_type"] = "fbank"
         self.kwargs["sound"] = "fbank"
         self.frontend = self.kwargs["frontend"]
+        print("Speech to Text model loaded")
         
     def exec_model(self, batch_audios):
         if self.model is None:

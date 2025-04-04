@@ -31,8 +31,15 @@ class TextChecker:
     def load_model(self):
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name).to(self.device)
+        print("Text Check model loaded")
 
     def model_exec(self, batch_premise: list[str]) -> np.ndarray:
+        '''
+        batch_premise: list of text strings
+        
+        return: classified type ID
+        0 hate speech, 1 offensive language, 2 neither
+        '''
         if self.model is None:
             self.load_model()
         inputs = self.tokenizer(batch_premise,
@@ -40,23 +47,22 @@ class TextChecker:
         with torch.no_grad():
             result = self.model(**inputs)
         logits = result.logits  # result[0] is now deprecated, use result.logits instead
-        print("logit is: ",logits)
-        entail_contradiction_logits = logits[:, [0, 2]]
-        probs = entail_contradiction_logits.softmax(dim=1)
-        true_probs = probs[:, 1] * 100 
-        return true_probs.tolist()
+        probs = logits.softmax(dim=1)
+        full_probs = probs.detach().cpu()
+        list_of_ids = torch.argmax(full_probs, dim=1).tolist() 
+        return list_of_ids
     
     def docs_check(self, doc_list: list[list[str]]) -> list[list[float]]:
         flattened_doc_list = [item for sublist in doc_list for item in sublist]
-        probs = self.model_exec(flattened_doc_list)
-        # Reshape the probs to match the original doc_list structure
-        reshaped_probs = []
+        types = self.model_exec(flattened_doc_list)
+        # Reshape the types to match the original doc_list structure
+        reshaped_types = []
         start = 0
         for sublist in doc_list:
             end = start + len(sublist)
-            reshaped_probs.append(probs[start:end])
+            reshaped_types.append(types[start:end])
             start = end
-        return reshaped_probs
+        return reshaped_types
 
 
 
@@ -98,11 +104,11 @@ class TextCheckWorker(ExecWorker):
             # Execute the batch
             for qid in batch.question_ids[:batch.num_pending]:
                 self.parent.tl.log(50030, qid, 0, batch.num_pending)
-            probs = self.checker_model.docs_check(batch.doc_list[:batch.num_pending])
+            doc_types = self.checker_model.docs_check(batch.doc_list[:batch.num_pending])
             for qid in batch.question_ids[:batch.num_pending]:
                 self.parent.tl.log(50031, qid, 0, batch.num_pending)
             self.parent.emit_worker.add_to_buffer(batch,
-                                                  probs, 
+                                                  doc_types, 
                                                   batch.num_pending)
             self.pending_batches[self.current_batch].reset()
 
@@ -130,7 +136,7 @@ class TextCheckEmitWorker(EmitWorker):
         return TextCheckResultBatchManager()
 
 
-    def add_to_buffer(self, batch, probs, num_queries):
+    def add_to_buffer(self, batch, doc_types, num_queries):
         '''
         pass by object reference to avoid deep-copy
         '''
@@ -141,7 +147,7 @@ class TextCheckEmitWorker(EmitWorker):
             for i in range(num_queries):
                 shard_pos = question_ids[i] % len(self.parent.next_udl_shards)
                 self.send_buffer[shard_pos].add_result(question_ids[i],  
-                                                       probs[i])
+                                                       doc_types[i])
             self.cv.notify()
         
 

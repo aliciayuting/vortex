@@ -77,7 +77,6 @@ class SearchWorker(ExecWorker):
                         self.next_batch = (self.next_batch + 1) % len(self.pending_batches)
                     self.new_space_available = True
                     self.cv.notify()
-                    print("found batch to exectute")
             if not self.running:
                 break
             if self.current_batch == -1 or not batch:
@@ -169,7 +168,6 @@ class SearchUDL(UserDefinedLogic):
         if not self.model_worker:
             self.start_threads()
         data = kwargs["blob"]
-        print("serach udl ocdpo")
         
         emb_batcher = EncodeResultBatchManager()
         emb_batcher.deserialize(data)

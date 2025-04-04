@@ -2,40 +2,43 @@
 import json
 import numpy as np
 from typing import Any
-import threading
-import torch
+import warnings
 
 from derecho.cascade.udl import UserDefinedLogic
 from derecho.cascade.member_client import ServiceClientAPI
 from derecho.cascade.member_client import TimestampLogger
 
 from pipeline2_serialize_utils import (DocResultBatchManager, 
-                                       TextCheckResultBatchManager)
+                                       TextCheckResultBatchManager,
+                                       LangDetResultBatchManager)
 
 
-class TextChecker:
-    def __init__(self, device: str, model_name: str):
-        self.model = None
-        self.tokenizer = None
-        self.device = device
-        self.model_name = model_name
+class CollectedResult:
+    def __init__(self, question_id):
+        self.question_id = question_id
+        self.question_text = None
+        self.doc_list = None
+        self.text_check_list = None  # a list of doc_type IDs: 0 hate speech, 1 offensive language, 2 neither
+        self.lang_detect_list = None
+
         
-    def load_model(self):
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name).to(self.device)
-
-    def model_exec(self, batch_premise: list[str]) -> np.ndarray:
-        if self.model is None:
-            self.load_model()
-        inputs = self.tokenizer(batch_premise,
-                       return_tensors='pt', padding=True, truncation=True).to(self.device)
-        with torch.no_grad():
-            result = self.model(**inputs)
-        logits = result.logits  # result[0] is now deprecated, use result.logits instead
-        entail_contradiction_logits = logits[:, [0, 2]]
-        probs = entail_contradiction_logits.softmax(dim=1)
-        true_probs = probs[:, 1] * 100 
-        return true_probs.tolist()
+    def collect_all(self):
+        if self.question_text is None:
+            return False
+        if self.doc_list is None:
+            return False
+        if self.text_check_list is None:
+            return False
+        if self.lang_detect_list is None:
+            return False
+        return True
+    
+    def print_result(self):
+        print(f"Question ID: {self.question_id}")
+        print(f"Question Text: {self.question_text}")
+        print(f"Document List: {self.doc_list}")
+        print(f"Text Check List: {self.text_check_list}")
+        print(f"Language Detect List: {self.lang_detect_list}")
 
 
 
@@ -44,52 +47,106 @@ class AggregateUDL(UserDefinedLogic):
         self.conf: dict[str, Any] = json.loads(conf_str)
         self.capi = ServiceClientAPI()
         self.tl = TimestampLogger()
-        self.device = self.conf["device"]
-        self.model_name = self.conf["model_name"]
-        # Note: batch size here is topk(5) * max_exe_batch_size, 
-        self.max_exe_batch_size = int(self.conf.get("max_exe_batch_size", 16))
-        self.batch_time_us = int(self.conf.get("batch_time_us", 1000))
-        self.max_emit_batch_size = int(self.conf.get("max_emit_batch_size", 5))
-        self.next_udl_shards = self.conf.get("next_udl_shards", [0,1])
-        self.num_pending_buffer = self.conf.get("num_pending_buffer", 10)
-        
-        self.model_worker = None
-        self.emit_worker = None
-        self.sent_msg_count = 0
-        
-    def start_threads(self):
-        '''
-        Start the worker threads
-        '''
-        if not self.model_worker:
-            self.model_worker = TextCheckWorker(self, 1)
-            self.model_worker.start()
-            self.emit_worker = TextCheckEmitWorker(self, 2)
-            self.emit_worker.start()
+        self.collected_results = {}
+        self.finished_count = 0
+        self.flush_qid = self.conf["flush_qid"]
+    
+    def add_doc_result(self,doc_result_batch: DocResultBatchManager):
+        for idx, qid in enumerate(doc_result_batch.question_ids):
+            self.tl.log(70001, qid, 0, 0)
+            if qid not in self.collected_results:
+                self.collected_results[qid] = CollectedResult(qid)
+            self.collected_results[qid].question_text = doc_result_batch.queries[idx]
+            self.collected_results[qid].doc_list = doc_result_batch.doc_list[idx].copy()
+            if len(self.collected_results[qid].doc_list) == 0:
+                warnings.warn(f"AGG received an empty doc list for question ID {qid}")
+
+    def add_text_check_result(self, text_check_result_batch: TextCheckResultBatchManager):
+        for idx, qid in enumerate(text_check_result_batch.question_ids):
+            self.tl.log(70010, qid, 0, 0)
+            if qid not in self.collected_results:
+                self.collected_results[qid] = CollectedResult(qid)
+            self.collected_results[qid].text_check_list = text_check_result_batch.doc_types[idx].copy()
+            if len(self.collected_results[qid].text_check_list) == 0:
+                warnings.warn(f"AGG received an empty text check result for question ID {qid}")
+            
+    def add_lang_detect_result(self, lang_detect_result_batch: LangDetResultBatchManager):
+        for idx, qid in enumerate(lang_detect_result_batch.question_ids):
+            self.tl.log(70011, qid, 0, 0)
+            if qid not in self.collected_results:
+                self.collected_results[qid] = CollectedResult(qid)
+            self.collected_results[qid].lang_detect_list = lang_detect_result_batch.lang_codes[idx].copy()
+            if len(self.collected_results[qid].lang_detect_list) == 0:
+                warnings.warn(f"AGG received an empty lang detect list for question ID {qid}")
+
 
     def ocdpo_handler(self, **kwargs):
-        # Only start the model_worker if this UDL is triggered on this node
-        if not self.model_worker:
-            self.start_threads()
         data = kwargs["blob"]
+        key = kwargs["key"]
         
-        doc_result_batcher = DocResultBatchManager()
-        doc_result_batcher.deserialize(data)
-        
-        for qid in doc_result_batcher.question_ids:
-            self.tl.log(50000, qid, 0, 0)
+        qids = []
+        if key.find("doc") != -1:
+            # doc result
+            doc_result_batcher = DocResultBatchManager()
+            doc_result_batcher.deserialize(data)
             
-        self.model_worker.push_to_pending_batches(doc_result_batcher)
+            bsize = doc_result_batcher.num_queries
+            for qid in doc_result_batcher.question_ids:
+                qids.append(qid)
+                self.tl.log(70000, qid, bsize, 0)
+                if qid == self.flush_qid:
+                    print(f"AGG received Doc result from No.{qid} queries")
+                
+            self.add_doc_result(doc_result_batcher)
+            
+            
+            
+        if key.find("check") != -1:
+            # text check result
+            text_check_result_batcher = TextCheckResultBatchManager()
+            text_check_result_batcher.deserialize(data)
+            
+            bsize = text_check_result_batcher.num_queries
+            for qid in text_check_result_batcher.question_ids:
+                qids.append(qid)
+                self.tl.log(70000, qid, bsize, 0)
+                if qid == self.flush_qid:
+                    print(f"AGG received TextCheck result from No.{qid} queries")
+                
+            self.add_text_check_result(text_check_result_batcher)
+            
+            
+            
+        if key.find("lang") != -1:
+            # lang detect result
+            lang_detect_result_batcher = LangDetResultBatchManager()
+            lang_detect_result_batcher.deserialize(data)
+            
+            bsize = lang_detect_result_batcher.num_queries
+            for qid in lang_detect_result_batcher.question_ids:
+                qids.append(qid)
+                self.tl.log(70000, qid, bsize, 0)
+                if qid == self.flush_qid:
+                    print(f"AGG received LangDetect result from No.{qid} queries")
+                
+            self.add_lang_detect_result(lang_detect_result_batcher)
+            
+
+        for qid in qids:
+            if self.collected_results[qid].collect_all():
+                self.finished_count += 1
+                self.tl.log(70100, qid, 0, 1)
+                if qid == self.flush_qid:
+                    print(f"AGG received all results for question ID {qid}")
+                    # self.collected_results[qid].print_result()
+                    print(f"AGG finished count: {self.finished_count}")
+            
+            
+        
 
 
     def __del__(self):
         '''
         Destructor
         '''
-        print(f"Encoder UDL destructor")
-        if self.model_worker:
-            self.model_worker.signal_stop()
-            self.model_worker.join()
-        if self.emit_worker:
-            self.emit_worker.signal_stop()
-            self.emit_worker.join()
+        print(f"Agg UDL destructor")
