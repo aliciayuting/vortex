@@ -135,6 +135,7 @@ class AggregateUDL(UserDefinedLogic):
         for qid in qids:
             if self.collected_results[qid].collect_all():
                 self.finished_count += 1
+                del self.collected_results[qid]
                 self.tl.log(70100, qid, 0, 1)
                 if qid == self.flush_qid:
                     print(f"AGG received all results for question ID {qid}")

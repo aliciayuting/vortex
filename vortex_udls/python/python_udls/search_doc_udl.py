@@ -4,52 +4,51 @@ import numpy as np
 from typing import Any
 import threading
 import faiss
-import pickle
+from search_udl import FaissSearcher
+from doc_udl import DocumentLoader
 
 from derecho.cascade.udl import UserDefinedLogic
 from derecho.cascade.member_client import ServiceClientAPI
 from derecho.cascade.member_client import TimestampLogger
 
-from pipeline2_serialize_utils import (PendingLoaderDataBatcher,
-                                       SearchResultBatchManager,
+from pipeline2_serialize_utils import (PendingSearchDataBatcher,
+                                       EncodeResultBatchManager,
                                        DocResultBatchManager)
 
 from workers_util import ExecWorker, EmitWorker
 
 
-DOC_NEXT_UDL_PREFIXES = ["/text_check/" , "/lang_det/", "/aggregate/doc_"]
-DOC_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
-DOC_NEXT_UDL_SUBGROUP_INDEX = 0
+SEARCH_DOC_NEXT_UDL_PREFIXES = ["/text_check/" , "/lang_det/", "/aggregate/doc_"]
+SEARCH_DOC_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
+SEARCH_DOC_NEXT_UDL_SUBGROUP_INDEX = 0
 
 
-class DocumentLoader:
-    def __init__(self, doc_dir):
-        self.doc_dir = doc_dir
-        self.doc_list = None
-        
-    def load_docs(self):
-        with open(self.doc_dir , 'rb') as file:
-            self.doc_list = pickle.load(file)
-        print("Document list loaded")
 
+class SearchRetriever:
+    def __init__(self, device: str, index_dir: str, topk: int = 5, doc_dir: str = None):
+        self.doc_loader = DocumentLoader(doc_dir)
+        self.searcher = FaissSearcher(device, index_dir, topk)
+        self.loaded_model = False        
 
-    def get_doc_list(self, doc_ids_list) -> list:
-        '''
-        doc_ids_list: list of list of doc_ids
-        '''
-        if self.doc_list is None:
-            self.load_docs()
-        doc_lists = []
-        for doc_ids in doc_ids_list:
-            cur_docs = []
-            for doc_id in doc_ids:
-                cur_docs.append(self.doc_list[doc_id])
-            doc_lists.append(cur_docs)
+    def load_model(self):
+        self.searcher.load_model()
+        self.doc_loader.load_docs()
+        self.loaded_model = True
+
+    def search_docs(self, embeddings: np.ndarray) -> list[list[str]]:
+        if not self.loaded_model:
+            self.load_model()
+        I = self.searcher.searcher_exec(embeddings)
+        # convert I to list of list of doc_ids
+        doc_list_ids = []
+        for i in range(I.shape[0]):
+            doc_list_ids.append(I[i,:].tolist())
+        # get doc_list from doc_loader
+        doc_lists = self.doc_loader.get_doc_list(doc_list_ids)
         return doc_lists
 
 
-
-class DocWorker(ExecWorker):
+class SearchRetrieveWorker(ExecWorker):
     '''
     This is a batch executor for faiss searcher execution
     '''
@@ -58,10 +57,11 @@ class DocWorker(ExecWorker):
         self.max_exe_batch_size = self.parent.max_exe_batch_size
         self.batch_time_us = self.parent.batch_time_us
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.doc_loader = DocumentLoader(self.parent.doc_dir)
+        self.searchRetriever = SearchRetriever(self.parent.device, self.parent.index_dir, self.parent.topk, self.parent.doc_dir)
+        
 
     def create_pending_manager(self):
-        return PendingLoaderDataBatcher(self.max_exe_batch_size)
+        return PendingSearchDataBatcher(self.max_exe_batch_size, self.parent.emb_dim)
 
     def main_loop(self):
         batch = None
@@ -86,31 +86,31 @@ class DocWorker(ExecWorker):
                 continue
             # Execute the batch
             for qid in batch.question_ids[:batch.num_pending]:
-                self.parent.tl.log(40030, qid, 0, batch.num_pending)
-            doc_lists = self.doc_loader.get_doc_list(batch.doc_ids[:batch.num_pending])
+                self.parent.tl.log(30030, qid, 0, batch.num_pending)
+            doc_list = self.searchRetriever.search_docs(batch.embeddings[:batch.num_pending])
             for qid in batch.question_ids[:batch.num_pending]:
-                self.parent.tl.log(40031, qid, 0, batch.num_pending)
+                self.parent.tl.log(30031, qid, 0, batch.num_pending)
             self.parent.emit_worker.add_to_buffer(batch,
-                                                  doc_lists, 
+                                                  doc_list, 
                                                   batch.num_pending)
             self.pending_batches[self.current_batch].reset()
+            
 
 
 
-class DocEmitWorker(EmitWorker):
+class SearchRetrieveEmitWorker(EmitWorker):
     '''
-    This is a batcher for SearcherUDL to emit to text check and language detection UDLs
+    This is a batcher for SearcherUDL to emit to Doc retrieve UDL
     '''
     def __init__(self, parent, thread_id):
         super().__init__(parent, thread_id)
         
-        self.emit_log_flag = 40100
+        self.emit_log_flag = 30100
         self.max_emit_batch_size = self.parent.max_emit_batch_size
         self.initial_pending_batch_num = self.parent.num_pending_buffer
-        self.next_udl_subgroup_type = DOC_NEXT_UDL_SUBGROUP_TYPE
-        self.next_udl_subgroup_index = DOC_NEXT_UDL_SUBGROUP_INDEX
-        self.next_udl_shards = self.parent.next_udl_shards
-        self.next_udl_prefixes = DOC_NEXT_UDL_PREFIXES
+        self.next_udl_subgroup_type = SEARCH_DOC_NEXT_UDL_SUBGROUP_TYPE
+        self.next_udl_subgroup_index = SEARCH_DOC_NEXT_UDL_SUBGROUP_INDEX
+        self.next_udl_prefixes = SEARCH_DOC_NEXT_UDL_PREFIXES
         #  Use the grouping of next_udl_agg_shards to setup the emit batch
         self.next_udl_shards = self.parent.next_udl_agg_shards
         
@@ -120,7 +120,7 @@ class DocEmitWorker(EmitWorker):
         # Return an instance of the batch manager that this child class needs.
         return DocResultBatchManager()
 
-
+    
     def add_to_buffer(self, batch, doc_lists, num_queries):
         '''
         pass by object reference to avoid deep-copy
@@ -130,13 +130,14 @@ class DocEmitWorker(EmitWorker):
         
         with self.cv:
             # use question_id to determine which shard to send to
+            #  Use the grouping of next_udl_agg_shards to load balance the emit
             for i in range(num_queries):
-                shard_pos = question_ids[i] % len(self.parent.next_udl_shards)
+                shard_pos = question_ids[i] % len(self.next_udl_shards)
                 self.send_buffer[shard_pos].add_result(question_ids[i],  
                                                        queries[i],
                                                        doc_lists[i])
             self.cv.notify()
-    
+            
     def process_and_emit_results(self, to_send):
         for idx, batch_manager in enumerate(to_send):
             if batch_manager.num_queries == 0:
@@ -169,22 +170,27 @@ class DocEmitWorker(EmitWorker):
                     self.parent.sent_msg_count += 1
                     num_sent += serialize_batch_size
                     self.sent_batch_counter += 1
-                    
+                    print(f"sent {new_key} to next UDL")
+                batch_manager.print_info()
 
 
-class DocUDL(UserDefinedLogic):
+class SearchRetreiveUDL(UserDefinedLogic):
     def __init__(self, conf_str: str):
         self.conf: dict[str, Any] = json.loads(conf_str)
         self.capi = ServiceClientAPI()
         self.tl = TimestampLogger()
-        self.doc_dir = self.conf["doc_dir"]
+        self.device = self.conf["device"]
+        self.index_dir = self.conf["index_dir"]
         self.max_exe_batch_size = int(self.conf.get("max_exe_batch_size", 16))
         self.batch_time_us = int(self.conf.get("batch_time_us", 1000))
         self.max_emit_batch_size = int(self.conf.get("max_emit_batch_size", 5))
-        self.num_pending_buffer = self.conf.get("num_pending_buffer", 10)
         self.next_udl_tcheck_shards = self.conf.get("next_udl_tcheck_shards", [0,1])
         self.next_udl_lang_shards = self.conf.get("next_udl_lang_shards", [0,1])
         self.next_udl_agg_shards = self.conf.get("next_udl_agg_shards", [0,1])
+        self.num_pending_buffer = self.conf.get("num_pending_buffer", 10)
+        self.emb_dim = int(self.conf.get("emb_dim", 384))
+        self.topk = int(self.conf.get("topk", 5))
+        self.doc_dir = self.conf["doc_dir"]
         
         self.model_worker = None
         self.emit_worker = None
@@ -195,9 +201,9 @@ class DocUDL(UserDefinedLogic):
         Start the worker threads
         '''
         if not self.model_worker:
-            self.model_worker = DocWorker(self, 1)
+            self.model_worker = SearchRetrieveWorker(self, 1)
             self.model_worker.start()
-            self.emit_worker = DocEmitWorker(self, 2)
+            self.emit_worker = SearchRetrieveEmitWorker(self, 2)
             self.emit_worker.start()
 
     def ocdpo_handler(self, **kwargs):
@@ -206,20 +212,23 @@ class DocUDL(UserDefinedLogic):
             self.start_threads()
         data = kwargs["blob"]
         
-        search_res_batcher = SearchResultBatchManager()
-        search_res_batcher.deserialize(data)
+        emb_batcher = EncodeResultBatchManager()
+        emb_batcher.deserialize(data)
         
-        for qid in search_res_batcher.question_ids:
-            self.tl.log(40000, qid, 0, 0)
+        emb_batcher.print_info()
+        
+    
+        for qid in emb_batcher.question_ids:
+            self.tl.log(30000, qid, 0, 0)
             
-        self.model_worker.push_to_pending_batches(search_res_batcher)
+        self.model_worker.push_to_pending_batches(emb_batcher)
 
 
     def __del__(self):
         '''
         Destructor
         '''
-        print(f"Loader UDL destructor")
+        print(f"SearchRetriever UDL destructor")
         if self.model_worker:
             self.model_worker.signal_stop()
             self.model_worker.join()

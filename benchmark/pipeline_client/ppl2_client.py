@@ -13,14 +13,15 @@ from torch.utils.data import DataLoader
 
 
 BS = 1
-NUM_BATCHES = 50
+NUM_BATCHES = 2
 SEND_INTERVAL = 1  # in s
-FIRST_UDL_PREFIX = "/speech_to_text/"
+FIRST_UDL_PREFIX = "/mono_speech/"
+# FIRST_UDL_PREFIX = "/mono_speech/"
 FIRST_UDL_SHARDS = [0]
 FIRST_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 FIRST_UDL_SUBGROUP_INDEX = 0
 AUDIO_DIR = "./perf_data/"
-AUDIO_PKL_NAME = "queries_audio1.pkl"
+AUDIO_PKL_NAME = "queries_audio5000.pkl"
 
 
 def get_audio_data():

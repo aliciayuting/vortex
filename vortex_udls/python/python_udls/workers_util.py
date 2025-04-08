@@ -114,7 +114,7 @@ class EmitWorker(ABC):
         self.next_udl_subgroup_type = None
         self.next_udl_subgroup_index = None
         self.emit_log_flag = None
-        self.next_udl_prefixes = None
+        self.next_udl_prefix = None
         
         self.lock = threading.Lock()
         self.cv = threading.Condition(self.lock)
@@ -164,23 +164,23 @@ class EmitWorker(ABC):
                 serialize_batch_size = min(self.max_emit_batch_size, batch_manager.num_queries - num_sent)
                 start_pos = num_sent
                 end_pos = num_sent + serialize_batch_size
-                serialized_batch = batch_manager.serialize(start_pos, end_pos)
-                for next_udl_prefix in self.next_udl_prefixes:
-                    new_key = next_udl_prefix + str(self.parent.sent_msg_count) + "_" + str(cur_shard_id)
-                    shard_idx = self.next_udl_shards[self.sent_batch_counter % len(self.next_udl_shards)]
-                    
-                    for qid in batch_manager.question_ids[start_pos:end_pos]:
-                        self.parent.tl.log(self.emit_log_flag, qid, 0, end_pos - start_pos)
-                    
-                    self.parent.capi.put_nparray(new_key, serialized_batch, 
-                                    subgroup_type=self.next_udl_subgroup_type,
-                                    subgroup_index=self.next_udl_subgroup_index, 
-                                    shard_index=shard_idx, 
-                                    message_id=1, as_trigger=True, blocking=False)
-                    self.parent.sent_msg_count += 1
-                    num_sent += serialize_batch_size
-                    self.sent_batch_counter += 1
-                #     print(f"sent {new_key} to next UDL")
+                serialized_batch = batch_manager.serialize(start_pos, end_pos)  
+
+                new_key = self.next_udl_prefix + str(self.parent.sent_msg_count) + "_" + str(cur_shard_id)
+                shard_idx = self.next_udl_shards[idx]
+                
+                for qid in batch_manager.question_ids[start_pos:end_pos]:
+                    self.parent.tl.log(self.emit_log_flag, qid, 0, end_pos - start_pos)
+                
+                self.parent.capi.put_nparray(new_key, serialized_batch, 
+                                subgroup_type=self.next_udl_subgroup_type,
+                                subgroup_index=self.next_udl_subgroup_index, 
+                                shard_index=shard_idx, 
+                                message_id=1, as_trigger=True, blocking=False)
+                self.parent.sent_msg_count += 1
+                num_sent += serialize_batch_size
+                self.sent_batch_counter += 1
+                # print(f"sent {new_key} to next UDL")
                 # batch_manager.print_info()
                 
     

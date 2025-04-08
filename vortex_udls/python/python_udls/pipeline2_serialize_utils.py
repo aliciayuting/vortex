@@ -110,8 +110,8 @@ class AudioBatcher:
     def print_info(self):
         print(f"AudioBatcher: {len(self.audio_data)} audio data")
         for i, audio in enumerate(self.audio_data):
-            print(f"Audio {i}: shape {audio.shape}, dtype {audio.dtype}")
-        print(f"Question IDs: {self.question_ids}")
+            print(f" audio {i}: shape {audio.shape}, dtype {audio.dtype}")
+        print(f" question IDs: {self.question_ids}")
 
 
 class PendingAudioRecDataBatcher:
@@ -246,13 +246,13 @@ class QueryBatcherManager:
         self.queries = []
         for idx in range(num_queries):
             text_offset, text_length = metadata_view[idx]
-            self.queries.append(memoryview(data)[text_start + text_offset:text_start + text_offset + text_length].tobytes().decode("utf-8"))
+            self.queries.append(memoryview(data)[text_offset:text_offset + text_length].tobytes().decode("utf-8"))
             
     def print_info(self):
         print(f"QueryBatcherManager: {len(self.queries)} queries")
         for i, q in enumerate(self.queries):
-            print(f"Query {i}: {q}")
-        print(f"Question IDs: {self.question_ids}")
+            print(f" query {i}: {q}")
+        print(f" question IDs: {self.question_ids}")
 
 class PendingEncodeDataBatcher:
     def __init__(self, batch_size: int):
@@ -282,23 +282,6 @@ class PendingEncodeDataBatcher:
 
 
 class EncodeResultBatchManager:
-    """
-    Manages the encoding results for a batch of queries and serializes the batch in the format expected by Batch.deserialize.
-    
-    The output layout is:
-      [Header][Metadata records][Concatenated text bytes][Embeddings block]
-    
-    Header (dtype header_type):
-      - count: uint32, the number of queries
-      - embeddings_start: uint32, byte offset to the start of embeddings block
-    
-    Metadata (dtype metadata_type) for each query:
-      - question_id: uint64
-      - text_position: uint32  (absolute offset to the query text in the buffer)
-      - text_length: uint32    (length in bytes of the query text)
-      - embeddings_position: uint32 (absolute offset to the query embedding in the buffer)
-      - embeddings_dim: uint32 (number of float32 values in the embedding)
-    """
     
     def __init__(self):
         self.question_ids = []  # list[int]
@@ -307,13 +290,9 @@ class EncodeResultBatchManager:
         self.emb_dim = 0
         self.num_queries = 0
         self._bytes: np.ndarray = np.array([], dtype=np.uint8)
+        self.emb_dtype = np.float16  
 
     def add_result(self, question_id: int, query: str, embeddings: np.ndarray):
-        """
-        Add one result to the batch.
-        It is assumed that each embedding is a numpy array of type float32
-        with either shape (d,) or (1, d) and that all embeddings share the same dimension.
-        """
         self.question_ids.append(question_id)
         self.queries.append(query)
         self.embeddings_list.append(embeddings)
@@ -338,47 +317,38 @@ class EncodeResultBatchManager:
         header_size = header_type.itemsize
         metadata_size = count * metadata_type.itemsize
         
-        # Preprocess query texts.
+        # Preprocess query texts
         text_bytes_list = [q.encode('utf-8') for q in self.queries[start_pos:end_pos]]
         text_lengths = [len(b) for b in text_bytes_list]
         total_text_size = sum(text_lengths)
         
-       # Preprocess embeddings.
+        # Preprocess embeddings
         first_emb = self.embeddings_list[0]
         if len(first_emb.shape) == 1:
             self.emb_dim = first_emb.shape[0]
         else:
             self.emb_dim = first_emb.shape[1]
-        emb_itemsize = np.dtype(np.float32).itemsize
+        emb_itemsize = np.dtype(self.emb_dtype).itemsize  
         embedding_bytes_per_query = self.emb_dim * emb_itemsize
-        
         total_embeddings_size = count * embedding_bytes_per_query
         
-        # Calculate the embeddings_start offset.
         embeddings_start = header_size + metadata_size + total_text_size
         total_size = header_size + metadata_size + total_text_size + total_embeddings_size
-        
-        # Allocate the output buffer.
         buffer = np.zeros(total_size, dtype=np.uint8)
         
-        # Fill the header.
         header_array = np.frombuffer(buffer[:header_size], dtype=header_type)
         header_array[0] = (count, embeddings_start)
         
-        # Fill the metadata records.
         metadata_array = np.frombuffer(buffer[header_size:header_size + metadata_size], dtype=metadata_type)
         text_block_start = header_size + metadata_size
         embeddings_block_start = embeddings_start
-        
         current_text_offset = 0
         
         for i in range(count):
-            # Calculate absolute positions.
             text_pos = text_block_start + current_text_offset
             text_len = text_lengths[i]
             emb_pos = embeddings_block_start + i * embedding_bytes_per_query
             
-            # Fill metadata record.
             metadata_array[i]['question_id'] = self.question_ids[start_pos + i]
             metadata_array[i]['text_position'] = text_pos
             metadata_array[i]['text_length'] = text_len
@@ -387,49 +357,28 @@ class EncodeResultBatchManager:
             
             current_text_offset += text_len
         
-        # Write the text block.
         current_text_offset = 0
         for b in text_bytes_list:
             start = text_block_start + current_text_offset
             end = start + len(b)
             buffer[start:end] = np.frombuffer(b, dtype=np.uint8)
             current_text_offset += len(b)
-            
-        # Write the embeddings block.
+        
         current_embedding_offset = 0
         for emb in self.embeddings_list[start_pos:end_pos]:
             start = embeddings_block_start + current_embedding_offset
-            # Ensure the embedding is float32.
-            if emb.dtype != np.float32:
-                emb = emb.astype(np.float32)
+            if emb.dtype != self.emb_dtype:
+                emb = emb.astype(self.emb_dtype) 
             emb_bytes = emb.flatten().view(np.uint8)
-            emb_nbytes = emb.nbytes
-            end = start + emb_nbytes
+            end = start + emb.nbytes
             buffer[start:end] = np.frombuffer(emb_bytes, dtype=np.uint8)
-            current_embedding_offset += emb_nbytes
+            current_embedding_offset += emb.nbytes
         
         return buffer
 
-    def deserialize(self,buffer: np.ndarray):
-        """
-        The layout is:
-        [Header][Metadata records][Concatenated text bytes][Embeddings block]
-        
-        Header (dtype header_type):
-        - count: uint32, the number of queries
-        - embeddings_start: uint32, byte offset to the start of the embeddings block
-        
-        Metadata (dtype metadata_type) for each query:
-        - question_id: uint64
-        - text_position: uint32 (absolute offset to the query text)
-        - text_length: uint32   (length in bytes of the query text)
-        - embeddings_position: uint32 (absolute offset to the query embedding)
-        - embeddings_dim: uint32 (number of float32 values in the embedding)
-        """
-        # Create a memory view for zero-copy slicing.
+    def deserialize(self, buffer: np.ndarray):
         mv = memoryview(buffer)
         
-        # Define header and metadata dtypes.
         header_dtype = np.dtype([
             ('count', np.uint32),
             ('embeddings_start', np.uint32)
@@ -442,45 +391,38 @@ class EncodeResultBatchManager:
             ('embeddings_dim', np.uint32),
         ])
         
-        # Read header (no copy, just a view).
         header = np.frombuffer(mv, dtype=header_dtype, count=1)[0]
         count = int(header['count'])
         self.num_queries = count
         embeddings_start = int(header['embeddings_start'])
         
-        # Compute sizes.
         header_size = header_dtype.itemsize
         metadata_size = count * metadata_dtype.itemsize
         
-        # Read metadata as a view.
         metadata = np.frombuffer(mv, dtype=metadata_dtype, count=count, offset=header_size)
       
-        
-        # For each metadata record, create views for text and embeddings.
         for rec in metadata:
             self.question_ids.append(int(rec['question_id']))
-            
-            # Get the query text.
             text_pos = int(rec['text_position'])
             text_len = int(rec['text_length'])
-            # This slice creates a new bytes object for the string, which is needed for decoding.
             text_bytes = mv[text_pos:text_pos + text_len].tobytes()
             self.queries.append(text_bytes.decode('utf-8'))
             
-            # Create a view for the embedding (no copy).
             emb_pos = int(rec['embeddings_position'])
             self.emb_dim = int(rec['embeddings_dim'])
-            # np.frombuffer returns a view on mv without copying the data.
-            embedding = np.frombuffer(mv, dtype=np.float32, count=self.emb_dim, offset=emb_pos)
+            embedding = np.frombuffer(mv, dtype=self.emb_dtype, count=self.emb_dim, offset=emb_pos)
             self.embeddings_list.append(embedding)
-        
     
     def print_info(self):
         print(f"EncodeResultBatchManager: {self.num_queries} queries")
         for i, q in enumerate(self.queries):
-            print(f"Query {i}: {q}")
-        print(f"Question IDs: {self.question_ids}")
-        print(f"Embeddings dimension: {self.emb_dim}")
+            print(f" query {i}: {q}")
+        print(f" question IDs: {self.question_ids}")
+        print(f" embs:")
+        for i, emb in enumerate(self.embeddings_list):
+            print(f"  {i}: {emb[-5:]}")
+            print(f"  type: {emb.dtype}")
+
 
 # ------------------------    STEP C (Searcher) UDL batcher  -------------------------
 
@@ -491,9 +433,8 @@ class PendingSearchDataBatcher:
         self.num_pending = 0
         self.question_ids = []
         self.queries = []
-        self.embeddings = np.empty((self.max_batch_size, emb_dim), dtype=np.float32)  # Placeholder for embeddings
+        self.embeddings = np.empty((self.max_batch_size, emb_dim), dtype=np.float16)  # CHANGED to float16
 
-    
     def space_left(self):
         return self.max_batch_size - self.num_pending
     
@@ -502,15 +443,23 @@ class PendingSearchDataBatcher:
         end_pos = start_pos + num_to_add
         self.question_ids.extend(embedding_batcher.question_ids[start_pos:end_pos])
         self.queries.extend(embedding_batcher.queries[start_pos:end_pos])
-        self.embeddings[self.num_pending:self.num_pending + num_to_add] = embedding_batcher.embeddings_list[start_pos:end_pos]
+        
+        # Ensure compatibility if embedding_batcher data isn't already float16
+        for i in range(num_to_add):
+            emb = embedding_batcher.embeddings_list[start_pos + i]
+            if emb.dtype != np.float16:
+                emb = emb.astype(np.float16)
+            self.embeddings[self.num_pending + i] = emb
+
         self.num_pending += num_to_add
         return end_pos
 
     def reset(self):
         self.question_ids = []
         self.queries = []
-        self.embeddings = np.empty((self.max_batch_size, self.embeddings.shape[1]), dtype=np.float32)
+        self.embeddings = np.empty((self.max_batch_size, self.embeddings.shape[1]), dtype=np.float16)  # CHANGED to float16
         self.num_pending = 0
+
 
 class SearchResultBatchManager:
     def __init__(self):
@@ -682,9 +631,9 @@ class SearchResultBatchManager:
     def print_info(self):
         print(f"SearchResultBatchManager: {self.num_queries} queries")
         for i, q in enumerate(self.queries):
-            print(f"Query {i}: {q}")
-        print(f"Question IDs: {self.question_ids}")
-        print(f"Doc IDs: {self.doc_ids}")
+            print(f" query {i}: {q}")
+        print(f" question IDs: {self.question_ids}")
+        print(f" doc IDs: {self.doc_ids}")
         
 # ------------------------    STEP E (Loader) UDL batcher  -------------------------
 
@@ -924,8 +873,8 @@ class DocResultBatchManager:
     def print_info(self):
         print(f"SearchResultBatchManager: {self.num_queries} queries")
         for i in range(self.num_queries):
-            print(f"Query {i} (ID {self.question_ids[i]}): {self.queries[i]}")
-            print(f"  Docs ({len(self.doc_list[i])}): {self.doc_list[i]}")
+            print(f" query {i} (ID {self.question_ids[i]}): {self.queries[i]}")
+            print(f"  docs ({len(self.doc_list[i])}): {self.doc_list[i]}")
             
 
 # ------------------------    STEP F (Text Checker) UDL batcher  -------------------------
@@ -1087,7 +1036,7 @@ class TextCheckResultBatchManager:
     def print_info(self):
         print(f"TextCheckResultBatchManager: {self.num_queries} queries, {self.doc_count} docs per query")
         for i in range(self.num_queries):
-            print(f"Query ID {self.question_ids[i]}: doc_types = {self.doc_types[i]}")
+            print(f" query ID {self.question_ids[i]}: doc_types = {self.doc_types[i]}")
 
 # --------------------------    STEP G (Language Detection) UDL batcher  -------------------------
 class LangDetResultBatchManager:
@@ -1214,5 +1163,5 @@ class LangDetResultBatchManager:
     def print_info(self):
         print(f"LangDetResultBatchManager: {self.num_queries} queries, {self.lang_count} languages per query")
         for i in range(self.num_queries):
-            print(f"Query ID {self.question_ids[i]}: languages = {self.lang_codes[i]}")
+            print(f" query ID {self.question_ids[i]}: languages = {self.lang_codes[i]}")
     

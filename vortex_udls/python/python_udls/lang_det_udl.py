@@ -44,7 +44,6 @@ class LanguageDetector:
         # Map raw predictions to languages
         id2lang = self.model.config.id2label
         vals, idxs = torch.max(preds, dim=1)
-        # print({id2lang[k.item()]: v.item() for k, v in zip(idxs, vals)})
         languages = []
         for k, v in zip(idxs, vals):
             lang = id2lang[k.item()]
@@ -127,7 +126,7 @@ class LangDetEmitWorker(EmitWorker):
         self.next_udl_subgroup_type = LANG_NEXT_UDL_SUBGROUP_TYPE
         self.next_udl_subgroup_index = LANG_NEXT_UDL_SUBGROUP_INDEX
         self.next_udl_shards = self.parent.next_udl_shards
-        self.next_udl_prefixes = [LANG_NEXT_UDL_PREFIX]
+        self.next_udl_prefix = LANG_NEXT_UDL_PREFIX
         
         
         

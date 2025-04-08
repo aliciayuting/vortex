@@ -127,7 +127,7 @@ class TextCheckEmitWorker(EmitWorker):
         self.next_udl_subgroup_type = CHECK_NEXT_UDL_SUBGROUP_TYPE
         self.next_udl_subgroup_index = CHECK_NEXT_UDL_SUBGROUP_INDEX
         self.next_udl_shards = self.parent.next_udl_shards
-        self.next_udl_prefixes = [CHECK_NEXT_UDL_PREFIX]
+        self.next_udl_prefix = CHECK_NEXT_UDL_PREFIX
         
         
         

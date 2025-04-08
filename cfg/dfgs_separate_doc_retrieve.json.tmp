@@ -51,10 +51,31 @@
                 "user_defined_logic_config_list": [
                     {
                         "python_path":["python_udls"],
-                        "module":"search_doc_udl",
-                        "entry_class":"SearchRetreiveUDL",
+                        "module":"search_udl",
+                        "entry_class":"SearchUDL",
                         "index_dir": "/mnt/nvme0/vortex_pipeline1/msmarco_pq.index",
                         "device": "cuda",
+                        "max_exe_batch_size":10,
+                        "batch_time_us":1000,
+                        "max_emit_batch_size":10,
+                        "num_pending_buffer":10,
+                        "next_udl_shards":[1],
+                        "emb_dim":384,
+                        "topk":5
+                    }],
+                "destinations": [{"/get_doc":"put"}]
+            },
+            {
+                "pathname": "/get_doc",
+                "shard_dispatcher_list": ["one"],
+                "user_defined_logic_list": ["6cfe8f64-3a1d-11ed-8e7e-0242ac110006"],
+                "user_defined_logic_stateful_list": ["singlethreaded"],
+                "user_defined_logic_config_list": [
+                    {
+                        "python_path":["python_udls"],
+                        "module":"doc_udl",
+                        "entry_class":"DocUDL",
+                        "doc_dir":"/mnt/nvme0/vortex_pipeline1/doc_list.pkl",
                         "max_exe_batch_size":10,
                         "batch_time_us":1000,
                         "max_emit_batch_size":10,
@@ -62,9 +83,7 @@
                         "next_udl_tcheck_shards":[2],
                         "next_udl_lang_shards":[2],
                         "next_udl_agg_shards":[1],
-                        "emb_dim":384,
-                        "topk":5,
-                        "doc_dir":"/mnt/nvme0/vortex_pipeline1/doc_list.pkl"
+                        "next_udl_shards":[1]
                     }],
                 "destinations": [{"/text_check":"put","/lang_det":"put"}]
             },
@@ -118,7 +137,7 @@
                         "python_path":["python_udls"],
                         "module":"aggregate_udl",
                         "entry_class":"AggregateUDL",
-                        "flush_qid":19
+                        "flush_qid":49
                     }],
                 "destinations": [{}]
             }
