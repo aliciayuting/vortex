@@ -76,7 +76,7 @@ def main(argv):
         capi.put_nparray(key, query_np, 
                 subgroup_type=FIRST_UDL_SUBGROUP_TYPE,
                 subgroup_index=FIRST_UDL_SUBGROUP_INDEX,
-                shard_index=0,
+                shard_index=FIRST_UDL_SHARDS[batch_idx % len(FIRST_UDL_SHARDS)],
                 message_id=batch_idx)
         # print(f"Put key:{key} \n    value:{audio_query_batch.question_ids} to Cascade.")
 
