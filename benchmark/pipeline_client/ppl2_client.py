@@ -15,8 +15,8 @@ from torch.utils.data import DataLoader
 BS = 1
 NUM_BATCHES = 2
 SEND_INTERVAL = 1  # in s
-FIRST_UDL_PREFIX = "/mono_speech/"
-# FIRST_UDL_PREFIX = "/mono_speech/"
+FIRST_UDL_PREFIX = "/speech_to_text/" # micro
+# FIRST_UDL_PREFIX = "/mono_speech/" # mono
 FIRST_UDL_SHARDS = [0]
 FIRST_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 FIRST_UDL_SUBGROUP_INDEX = 0
@@ -67,7 +67,7 @@ def main(argv):
         audio_query_batch.question_ids = [batch_idx * BS + i for i in range(len(batch))]
         audio_query_batch.audio_data = batch
         query_np = audio_query_batch.serialize()
-        audio_query_batch.print_info()
+        # audio_query_batch.print_info()
         
         
         for qid in audio_query_batch.question_ids:
