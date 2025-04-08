@@ -16,7 +16,7 @@ BS = 1
 NUM_BATCHES = 2
 SEND_INTERVAL = 1  # in s
 FIRST_UDL_PREFIX = "/speech_to_text/" # micro
-# FIRST_UDL_PREFIX = "/mono_speech/" # mono
+FIRST_UDL_PREFIX = "/mono_speech/" # mono
 FIRST_UDL_SHARDS = [0]
 FIRST_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 FIRST_UDL_SUBGROUP_INDEX = 0
@@ -30,6 +30,8 @@ def get_audio_data():
         waveforms = pickle.load(f)
     list_np_waveform = []
     for i, item in enumerate(waveforms):
+        if len(item[-1]) > 200000:
+            continue
         list_np_waveform.append(item[-1])
     return list_np_waveform
 

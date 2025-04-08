@@ -125,9 +125,11 @@ class PendingAudioRecDataBatcher:
         self.audio_data = []   # List[np.ndarray]
         self.len_limit_for_batching = len_limit_for_batching
         self.contain_large_audio = False
+    
+    def space_left(self):
+        return self.max_batch_size - self.num_pending
         
-        
-    def space_left(self, cur_arr_len=0):
+    def space_left(self, cur_arr_len):
         # for large array audio, it cannot be processed in batch and needs to have a batch to it self
         if cur_arr_len > self.len_limit_for_batching:
             # only add to pending if this batch is empty
