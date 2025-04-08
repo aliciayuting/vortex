@@ -59,7 +59,7 @@ def main(argv):
     
 
     for batch_idx, batch in enumerate(loader):
-        if batch_idx >= NUM_BATCHES:
+        if batch_idx > NUM_BATCHES:
             break
         key = FIRST_UDL_PREFIX + str(batch_idx)
         
