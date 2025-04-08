@@ -129,19 +129,19 @@ class PendingAudioRecDataBatcher:
     def space_left(self):
         return self.max_batch_size - self.num_pending
         
-    def space_left(self, cur_arr_len):
-        # for large array audio, it cannot be processed in batch and needs to have a batch to it self
-        if cur_arr_len > self.len_limit_for_batching:
-            # only add to pending if this batch is empty
-            if self.num_pending == 0 :
-                self.contain_large_audio = True
-                return 1
-            else:
-                return 0
-        if self.contain_large_audio:
-            # If the batch contains large audio, we need to ensure that we have enough space for it
-            return 0
-        return self.max_batch_size - self.num_pending
+    # def space_left_large(self, cur_arr_len):
+    #     # for large array audio, it cannot be processed in batch and needs to have a batch to it self
+    #     if cur_arr_len > self.len_limit_for_batching:
+    #         # only add to pending if this batch is empty
+    #         if self.num_pending == 0 :
+    #             self.contain_large_audio = True
+    #             return 1
+    #         else:
+    #             return 0
+    #     if self.contain_large_audio:
+    #         # If the batch contains large audio, we need to ensure that we have enough space for it
+    #         return 0
+    #     return self.max_batch_size - self.num_pending
     
     
     def add_data(self, audioBatcher, start_pos):

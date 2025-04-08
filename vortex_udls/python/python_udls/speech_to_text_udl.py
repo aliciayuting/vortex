@@ -64,6 +64,59 @@ class AudioRecognition:
             text_list.append(rich_transcription_postprocess(res[0][idx]["text"]))
         return text_list
 
+    def exec_model_large_separated(self, batch_audios):
+        if self.model is None:
+            self.load_model()
+
+        small_audios = []
+        large_audios = []
+        small_indices = []
+        large_indices = []
+
+        for idx, audio in enumerate(batch_audios):
+            if audio.shape[0] > 200000:
+                large_audios.append(audio)
+                large_indices.append(idx)
+            else:
+                small_audios.append(audio)
+                small_indices.append(idx)
+
+        # Prepare results with correct ordering
+        total_results = [None] * len(batch_audios)
+
+        # Process small audios in batch
+        if small_audios:
+            speech, speech_lengths = extract_fbank(
+                small_audios, data_type=self.kwargs.get("data_type", "sound"), frontend=self.frontend
+            )
+            res = self.model.inference(
+                data_in=speech,
+                data_lengths=speech_lengths,
+                language=self.language, 
+                use_itn=False,
+                ban_emo_unk=True,
+                **self.kwargs,
+            )
+            for i, idx in enumerate(small_indices):
+                total_results[idx] = rich_transcription_postprocess(res[0][i]["text"])
+
+        # Process large audios one-by-one
+        for i, audio in enumerate(large_audios):
+            speech, speech_lengths = extract_fbank(
+                [audio], data_type=self.kwargs.get("data_type", "sound"), frontend=self.frontend
+            )
+            res = self.model.inference(
+                data_in=speech,
+                data_lengths=speech_lengths,
+                language=self.language, 
+                use_itn=False,
+                ban_emo_unk=True,
+                **self.kwargs,
+            )
+            total_results[large_indices[i]] = rich_transcription_postprocess(res[0][0]["text"])
+
+        return total_results
+
 
 class SpeechTextWorker(ExecWorker):
     '''
@@ -128,7 +181,7 @@ class SpeechTextWorker(ExecWorker):
     #                     break
     #             cur_audio_len = queryBatcher.audio_data[question_to_add_id].shape[0]
     #             free_batch = self.next_batch
-    #             space_left = self.pending_batches[free_batch].space_left(cur_arr_len=cur_audio_len)
+    #             space_left = self.pending_batches[free_batch].space_left_large(cur_arr_len=cur_audio_len)
     #             initial_batch = free_batch
     #             # Find the idx in the pending_batches to add the data
     #             while space_left == 0:
@@ -137,7 +190,7 @@ class SpeechTextWorker(ExecWorker):
     #                     free_batch = (free_batch + 1) % len(self.pending_batches)
     #                 if free_batch == initial_batch:
     #                     break
-    #                 space_left = self.pending_batches[free_batch].space_left()
+    #                 space_left = self.pending_batches[free_batch].space_left_large(cur_arr_len=cur_audio_len)
     #             if space_left != 0:
     #                 # add as many questions as possible to the pending batch
     #                 self.next_batch = free_batch
@@ -145,7 +198,7 @@ class SpeechTextWorker(ExecWorker):
     #                 end_idx = self.pending_batches[free_batch].add_single_data(queryBatcher, question_start_idx)
     #                 question_to_add_id = end_idx
     #                 #  if we complete filled the buffer, cycle to the next
-    #                 if self.pending_batches[free_batch].space_left() == 0:
+    #                 if self.pending_batches[free_batch].space_left_large(cur_arr_len=cur_audio_len) == 0:
     #                     self.next_batch = (self.next_batch + 1) % len(self.pending_batches)
     #                     if self.next_batch == self.current_batch:
     #                         self.next_batch = (self.next_batch + 1) % len(self.pending_batches)

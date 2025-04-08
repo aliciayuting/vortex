@@ -162,7 +162,7 @@ class MonoSpeechModelWorker(ExecWorker):
     #                     break
     #             cur_audio_len = queryBatcher.audio_data[question_to_add_id].shape[0]
     #             free_batch = self.next_batch
-    #             space_left = self.pending_batches[free_batch].space_left(cur_arr_len=cur_audio_len)
+    #             space_left = self.pending_batches[free_batch].space_left_large(cur_arr_len=cur_audio_len)
     #             initial_batch = free_batch
     #             # Find the idx in the pending_batches to add the data
     #             while space_left == 0:
@@ -171,7 +171,7 @@ class MonoSpeechModelWorker(ExecWorker):
     #                     free_batch = (free_batch + 1) % len(self.pending_batches)
     #                 if free_batch == initial_batch:
     #                     break
-    #                 space_left = self.pending_batches[free_batch].space_left()
+    #                 space_left = self.pending_batches[free_batch].space_left_large(cur_arr_len=cur_audio_len)
     #             if space_left != 0:
     #                 # add as many questions as possible to the pending batch
     #                 self.next_batch = free_batch
@@ -179,7 +179,7 @@ class MonoSpeechModelWorker(ExecWorker):
     #                 end_idx = self.pending_batches[free_batch].add_single_data(queryBatcher, question_start_idx)
     #                 question_to_add_id = end_idx
     #                 #  if we complete filled the buffer, cycle to the next
-    #                 if self.pending_batches[free_batch].space_left() == 0:
+    #                 if self.pending_batches[free_batch].space_left_large(cur_arr_len=cur_audio_len) == 0:
     #                     self.next_batch = (self.next_batch + 1) % len(self.pending_batches)
     #                     if self.next_batch == self.current_batch:
     #                         self.next_batch = (self.next_batch + 1) % len(self.pending_batches)
