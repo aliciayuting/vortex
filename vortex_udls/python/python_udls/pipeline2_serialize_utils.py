@@ -118,17 +118,46 @@ class PendingAudioRecDataBatcher:
     '''
     Super batch of AudioBatcher, used for model runtime batch process.
     '''
-    def __init__(self, batch_size: int):
+    def __init__(self, batch_size: int,len_limit_for_batching: int = 200000):
         self.max_batch_size = batch_size
         self.num_pending = 0
         self.question_ids = []  # List[int]
         self.audio_data = []   # List[np.ndarray]
+        self.len_limit_for_batching = len_limit_for_batching
+        self.contain_large_audio = False
         
-    def space_left(self):
+        
+    def space_left(self, cur_arr_len=0):
+        # for large array audio, it cannot be processed in batch and needs to have a batch to it self
+        if cur_arr_len > self.len_limit_for_batching:
+            # only add to pending if this batch is empty
+            if self.num_pending == 0 :
+                self.contain_large_audio = True
+                return 1
+            else:
+                return 0
+        if self.contain_large_audio:
+            # If the batch contains large audio, we need to ensure that we have enough space for it
+            return 0
         return self.max_batch_size - self.num_pending
+    
     
     def add_data(self, audioBatcher, start_pos):
         num_to_add = min(self.space_left(), len(audioBatcher.question_ids) - start_pos)
+        end_pos = start_pos + num_to_add
+        self.question_ids.extend(audioBatcher.question_ids[start_pos:end_pos])
+        # Make deep copies of each audio array as it's added, 
+        #  because memory of list[np array] is managed by numpy, leading to memory corruption if not copy out
+        for i in range(start_pos, end_pos):
+            # Create a new array with its own memory
+            new_array = np.array(audioBatcher.audio_data[i], copy=True)
+            
+        self.audio_data.append(new_array)
+        self.num_pending += num_to_add
+        return end_pos
+    
+    def add_single_data(self, audioBatcher, start_pos):
+        num_to_add = min(self.space_left(), 1, len(audioBatcher.question_ids) - start_pos)
         end_pos = start_pos + num_to_add
         self.question_ids.extend(audioBatcher.question_ids[start_pos:end_pos])
         # Make deep copies of each audio array as it's added, 
