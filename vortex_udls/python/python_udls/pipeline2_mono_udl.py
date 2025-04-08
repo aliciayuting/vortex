@@ -97,6 +97,9 @@ class MonoSpeechProcess:
                 "check_result": check_result[idx],
                 "lang_detect_result": lang_detect_result[idx]
             }
+        for qid in qids:
+            if qid == self.parent.flush_id:
+                print(f"Mono Speech PPL2 UDL: {qid} flush_id")
         return results
         
 
