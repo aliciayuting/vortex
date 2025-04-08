@@ -45,77 +45,78 @@ class AudioRecognition:
         self.frontend = self.kwargs["frontend"]
         print("Speech to Text model loaded")
         
+    # def exec_model(self, batch_audios):
+    #     if self.model is None:
+    #         self.load_model()
+    #     speech, speech_lengths = extract_fbank(
+    #         batch_audios, data_type=self.kwargs.get("data_type", "sound"), frontend=self.frontend
+    #     )
+    #     res = self.model.inference(
+    #         data_in=speech,
+    #         data_lengths=speech_lengths,
+    #         language=self.language, 
+    #         use_itn=False,
+    #         ban_emo_unk=True,
+    #         **self.kwargs,
+    #     )
+    #     text_list = []
+    #     for idx in range(len(res[0])):
+    #         text_list.append(rich_transcription_postprocess(res[0][idx]["text"]))
+    #     return text_list
+
     def exec_model(self, batch_audios):
         if self.model is None:
             self.load_model()
-        speech, speech_lengths = extract_fbank(
-            batch_audios, data_type=self.kwargs.get("data_type", "sound"), frontend=self.frontend
-        )
-        res = self.model.inference(
-            data_in=speech,
-            data_lengths=speech_lengths,
-            language=self.language, 
-            use_itn=False,
-            ban_emo_unk=True,
-            **self.kwargs,
-        )
-        text_list = []
-        for idx in range(len(res[0])):
-            text_list.append(rich_transcription_postprocess(res[0][idx]["text"]))
-        return text_list
 
-    def exec_model_large_separated(self, batch_audios):
-        if self.model is None:
-            self.load_model()
-
-        small_audios = []
-        large_audios = []
-        small_indices = []
-        large_indices = []
-
+        # Step 1: Separate audios by length, while preserving their original indices
+        short_audios = []
+        long_audio_tasks = []
         for idx, audio in enumerate(batch_audios):
-            if audio.shape[0] > 200000:
-                large_audios.append(audio)
-                large_indices.append(idx)
+            if len(audio) > 200000:
+                long_audio_tasks.append((idx, audio))
             else:
-                small_audios.append(audio)
-                small_indices.append(idx)
+                short_audios.append((idx, audio))
 
-        # Prepare results with correct ordering
-        total_results = [None] * len(batch_audios)
+        # Step 2: Prepare result list
+        text_list = [None] * len(batch_audios)
 
-        # Process small audios in batch
-        if small_audios:
+        # Step 3: Run batched inference on short audios
+        if short_audios:
+            indices, short_audio_data = zip(*short_audios)
             speech, speech_lengths = extract_fbank(
-                small_audios, data_type=self.kwargs.get("data_type", "sound"), frontend=self.frontend
+                list(short_audio_data), 
+                data_type=self.kwargs.get("data_type", "sound"), 
+                frontend=self.frontend
             )
             res = self.model.inference(
                 data_in=speech,
                 data_lengths=speech_lengths,
-                language=self.language, 
+                language=self.language,
                 use_itn=False,
                 ban_emo_unk=True,
                 **self.kwargs,
             )
-            for i, idx in enumerate(small_indices):
-                total_results[idx] = rich_transcription_postprocess(res[0][i]["text"])
+            for i, idx in enumerate(indices):
+                text_list[idx] = rich_transcription_postprocess(res[0][i]["text"])
 
-        # Process large audios one-by-one
-        for i, audio in enumerate(large_audios):
+        # Step 4: Run individual inference on long audios
+        for idx, audio in long_audio_tasks:
             speech, speech_lengths = extract_fbank(
-                [audio], data_type=self.kwargs.get("data_type", "sound"), frontend=self.frontend
+                [audio], 
+                data_type=self.kwargs.get("data_type", "sound"), 
+                frontend=self.frontend
             )
             res = self.model.inference(
                 data_in=speech,
                 data_lengths=speech_lengths,
-                language=self.language, 
+                language=self.language,
                 use_itn=False,
                 ban_emo_unk=True,
                 **self.kwargs,
             )
-            total_results[large_indices[i]] = rich_transcription_postprocess(res[0][0]["text"])
+            text_list[idx] = rich_transcription_postprocess(res[0][0]["text"])
 
-        return total_results
+        return text_list
 
 
 class SpeechTextWorker(ExecWorker):
