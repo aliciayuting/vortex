@@ -33,7 +33,7 @@ class DocumentLoader:
         print("Document list loaded")
 
 
-    def get_doc_list(self, doc_ids_list) -> list:
+    def get_doc_list(self, doc_ids_list) -> list[list[str]]:
         '''
         doc_ids_list: list of list of doc_ids
         '''

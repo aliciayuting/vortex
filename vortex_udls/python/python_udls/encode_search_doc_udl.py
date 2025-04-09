@@ -19,7 +19,7 @@ from pipeline2_serialize_utils import (PendingEncodeDataBatcher,
 from workers_util import ExecWorker, EmitWorker
 
 
-SEARCH_DOC_NEXT_UDL_PREFIXES = ["/text_check/" , "/lang_det/", "/aggregate/doc_"]
+SEARCH_DOC_NEXT_UDL_PREFIXES = ["/text_check/" , "/aggregate/doc_"]
 SEARCH_DOC_NEXT_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 SEARCH_DOC_NEXT_UDL_SUBGROUP_INDEX = 0
 
@@ -165,8 +165,6 @@ class EncodeSearchDocEmitWorker(EmitWorker):
                         shard_idx = self.parent.next_udl_agg_shards[idx]
                     elif next_udl_prefix == "/text_check/":
                         shard_idx = self.parent.next_udl_tcheck_shards[idx % len(self.parent.next_udl_tcheck_shards)]
-                    elif next_udl_prefix == "/lang_det/":
-                        shard_idx = self.parent.next_udl_lang_shards[idx % len(self.parent.next_udl_lang_shards)]
                     
                     for qid in batch_manager.question_ids[start_pos:end_pos]:
                         self.parent.tl.log(self.emit_log_flag, qid, 0, end_pos - start_pos)
@@ -195,7 +193,6 @@ class EncodeSearchDocUDL(UserDefinedLogic):
         self.batch_time_us = int(self.conf.get("batch_time_us", 1000))
         self.max_emit_batch_size = int(self.conf.get("max_emit_batch_size", 5))
         self.next_udl_tcheck_shards = self.conf.get("next_udl_tcheck_shards", [0,1])
-        self.next_udl_lang_shards = self.conf.get("next_udl_lang_shards", [0,1])
         self.next_udl_agg_shards = self.conf.get("next_udl_agg_shards", [0,1])
         self.num_pending_buffer = self.conf.get("num_pending_buffer", 10)
         self.emb_dim = int(self.conf.get("emb_dim", 384))

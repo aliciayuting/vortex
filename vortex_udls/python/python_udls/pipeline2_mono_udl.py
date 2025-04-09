@@ -14,7 +14,7 @@ from speech_to_text_udl import AudioRecognition
 from encode_udl import TextEncoder
 from search_doc_udl import SearchRetriever
 from text_check_udl import TextChecker
-from lang_det_udl import LanguageDetector
+from aggregate_udl import TTSRunner
 from pipeline2_serialize_utils import (AudioBatcher, PendingAudioRecDataBatcher)
 from workers_util import ExecWorker
 
@@ -32,12 +32,11 @@ class MonoSpeechProcess:
         self.topk = int(conf["topk"])
         self.doc_dir = conf["doc_dir"]
         self.check_model_name = conf["check_model_name"]
-        self.lang_model_name = conf["lang_model_name"]
         self.speech_model = AudioRecognition(self.device, self.speech_model_name)
         self.text_encoder = TextEncoder(self.device, self.encoder_model_name)
         self.search_retriever = SearchRetriever(self.device, self.index_dir, self.topk, self.doc_dir)
         self.text_checker = TextChecker(self.device, self.check_model_name)
-        self.lang_detector = LanguageDetector(self.device, self.lang_model_name)
+        self.tts_runner = TTSRunner(self.device)
         self.loaded_models = False
     
     def load_model(self):
@@ -45,7 +44,7 @@ class MonoSpeechProcess:
         self.text_encoder.load_model()
         self.search_retriever.load_model()
         self.text_checker.load_model()
-        self.lang_detector.load_model()
+        self.tts_runner.load_model()
         self.loaded_models = True
         
     def exec_model(self, pending_audio_batcher: PendingAudioRecDataBatcher):
@@ -85,7 +84,7 @@ class MonoSpeechProcess:
         # 5. Language detection
         for qid in qids:
             self.parent.tl.log(60030, qid, 0, num_pending)
-        lang_detect_result = self.lang_detector.docs_detect(doc_list)
+        audios = self.tts_runner.run_tts(doc_list)
         for qid in qids:
             self.parent.tl.log(60031, qid, 0, num_pending)
             # self.parent.tl.log(70100, qid, 0, num_pending)
@@ -95,7 +94,7 @@ class MonoSpeechProcess:
             results[qids[idx]] = {
                 "docs": docs,
                 "check_result": check_result[idx],
-                "lang_detect_result": lang_detect_result[idx]
+                "audios": audios[idx]
             }
         for qid in qids:
             if qid == self.parent.flush_id:

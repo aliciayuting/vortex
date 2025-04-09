@@ -12,7 +12,7 @@ from derecho.cascade.member_client import TimestampLogger
 from pipeline2_serialize_utils import (DocResultBatchManager, 
                                        PendingCheckDataBatcher,
                                        TextCheckResultBatchManager)
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import BartTokenizer, BartForSequenceClassification
 from workers_util import ExecWorker, EmitWorker
 
 
@@ -27,30 +27,31 @@ class TextChecker:
         self.tokenizer = None
         self.device = device
         self.model_name = model_name
+        self.hypothesis = "harmful."
         
     def load_model(self):
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name).to(self.device)
+        self.tokenizer = BartTokenizer.from_pretrained(self.model_name)
+        self.model = BartForSequenceClassification.from_pretrained(self.model_name).to(self.device)
         print("Text Check model loaded")
 
     def model_exec(self, batch_premise: list[str]) -> np.ndarray:
         '''
         batch_premise: list of text strings
         
-        return: classified type ID
-        0 hate speech, 1 offensive language, 2 neither
+        return: list of integer. probability in % that the content is harmful
         '''
         if self.model is None:
             self.load_model()
         inputs = self.tokenizer(batch_premise,
+                       [self.hypothesis] * len(batch_premise),
                        return_tensors='pt', padding=True, truncation=True).to(self.device)
         with torch.no_grad():
             result = self.model(**inputs)
-        logits = result.logits  # result[0] is now deprecated, use result.logits instead
-        probs = logits.softmax(dim=1)
-        full_probs = probs.detach().cpu()
-        list_of_ids = torch.argmax(full_probs, dim=1).tolist() 
-        return list_of_ids
+        logits = result.logits
+        entail_contradiction_logits = logits[:, [0, 2]]  # entailment = index 2
+        probs = entail_contradiction_logits.softmax(dim=1)
+        true_probs = probs[:, 1] * 100  # entailment probability
+        return true_probs.tolist()
     
     def docs_check(self, doc_list: list[list[str]]) -> list[list[float]]:
         flattened_doc_list = [item for sublist in doc_list for item in sublist]
