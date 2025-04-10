@@ -82,7 +82,7 @@
                         "max_exe_batch_size":10,
                         "num_pending_buffer":10,
                         "batch_time_us":1000,
-                        "flush_qid":19
+                        "flush_id":19
                     }],
                 "destinations": [{}]
             }
@@ -113,7 +113,7 @@
                         "max_exe_batch_size":10,
                         "batch_time_us":1000,
                         "num_pending_buffer":10,
-                        "flush_qid":49
+                        "flush_id":49
                     }],
                 "destinations": [{}]
             }

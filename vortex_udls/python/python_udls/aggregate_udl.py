@@ -139,13 +139,13 @@ class CollectedResult:
 
 
 class Collector:
-    def __init__(self, tl: TimestampLogger, flush_qid: str):
+    def __init__(self, tl: TimestampLogger, flush_id: str):
         self.collected_results = {}
         self.lock = threading.Lock()
         self.cv = threading.Condition(self.lock)
         self.finished_count = 0
         self.tl = tl
-        self.flush_qid = flush_qid
+        self.flush_id = flush_id
 
     def check_collected_result(self, qid):
         '''
@@ -157,7 +157,7 @@ class Collector:
             
             del self.collected_results[qid]
             self.tl.log(70100, qid, 0, 1)
-            if qid == self.flush_qid:
+            if qid == self.flush_id:
                 print(f"AGG received all results for question ID {qid}")
                 # self.collected_results[qid].print_result()
                 print(f"AGG finished count: {self.finished_count}")
@@ -205,11 +205,11 @@ class AggregateUDL(UserDefinedLogic):
         
         self.model_worker = None
         self.device = self.conf["device"]
-        self.collector = Collector(self.tl, self.conf["flush_qid"])
+        self.collector = Collector(self.tl, self.conf["flush_id"])
         self.max_exe_batch_size = int(self.conf.get("max_exe_batch_size", 16))
         self.batch_time_us = int(self.conf.get("batch_time_us", 1000))
         self.num_pending_buffer = self.conf.get("num_pending_buffer", 10)
-        self.flush_qid = self.conf["flush_qid"]
+        self.flush_id = self.conf["flush_id"]
     
 
     def start_threads(self):
