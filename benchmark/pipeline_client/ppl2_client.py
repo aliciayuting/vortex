@@ -13,11 +13,11 @@ from torch.utils.data import DataLoader
 
 
 BS = 1
-NUM_BATCHES = 2
+NUM_BATCHES = 5
 SEND_INTERVAL = 1  # in s
 FIRST_UDL_PREFIX = "/speech_to_text/" # micro
-# FIRST_UDL_PREFIX = "/mono_speech/" # mono
-FIRST_UDL_SHARDS = [0]
+FIRST_UDL_PREFIX = "/mono_speech/" # mono
+FIRST_UDL_SHARDS = [0,1]
 FIRST_UDL_SUBGROUP_TYPE = "VolatileCascadeStoreWithStringKey"
 FIRST_UDL_SUBGROUP_INDEX = 0
 AUDIO_DIR = "./perf_data/"

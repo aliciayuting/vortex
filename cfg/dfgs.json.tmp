@@ -43,7 +43,7 @@
                         "next_udl_tcheck_shards":[2],
                         "next_udl_agg_shards":[1],
                         "emb_dim":384,
-                        "topk":5,
+                        "topk":1,
                         "doc_dir":"/mnt/nvme0/vortex_pipeline1/doc_list.pkl"
                     }],
                 "destinations": [{"/text_check":"put","/aggregate/":"put"}]
@@ -78,9 +78,11 @@
                         "python_path":["python_udls"],
                         "module":"aggregate_udl",
                         "entry_class":"AggregateUDL",
-                        "flush_qid":19,
+                        "device": "cuda",
                         "max_exe_batch_size":10,
-                        "batch_time_us":1000
+                        "num_pending_buffer":10,
+                        "batch_time_us":1000,
+                        "flush_qid":19
                     }],
                 "destinations": [{}]
             }
@@ -105,10 +107,9 @@
                         "encoder_model_name": "BAAI/bge-small-en-v1.5",
                         "index_dir": "/mnt/nvme0/vortex_pipeline1/msmarco_pq.index",
                         "emb_dim":384,
-                        "topk":5,
+                        "topk":1,
                         "doc_dir":"/mnt/nvme0/vortex_pipeline1/doc_list.pkl",
                         "check_model_name": "facebook/bart-large-mnli",
-                        "lang_model_name": "papluca/xlm-roberta-base-language-detection",
                         "max_exe_batch_size":10,
                         "batch_time_us":1000,
                         "num_pending_buffer":10,

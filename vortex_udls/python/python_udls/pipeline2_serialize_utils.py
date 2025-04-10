@@ -914,7 +914,7 @@ class PendingCheckDataBatcher:
         self.max_batch_size = batch_size
         self.num_pending = 0
         self.question_ids = []
-        # self.queries = []
+        self.queries = []
         self.doc_list = []  # list[list[str]]
         self.doc_per_query = 0
         
@@ -929,8 +929,9 @@ class PendingCheckDataBatcher:
         if len(self.doc_list) == 0:
             self.doc_per_query = len(docBatcher.doc_list[start_pos])
         self.question_ids.extend(docBatcher.question_ids[start_pos:end_pos])
-        # self.queries.extend(docBatcher.queries[start_pos:end_pos])
-        self.doc_list.extend(docBatcher.doc_list[start_pos:end_pos])
+        self.queries.extend(docBatcher.queries[start_pos:end_pos])
+        # self.doc_list.extend(docBatcher.doc_list[start_pos:end_pos])
+        self.doc_list.extend([list(docs) for docs in docBatcher.doc_list[start_pos:end_pos]])
         self.num_pending += num_to_add
         return end_pos
 

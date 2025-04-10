@@ -43,10 +43,9 @@ class TTSRunner:
             spectrograms = self.fastpitch.generate_spectrogram(tokens=tokens)
             audios = self.hifigan.convert_spectrogram_to_audio(spec=spectrograms)
         np_audios = audios.cpu().numpy()
-        print("TTS: np_audios shape: ", np_audios.shape)
         return np_audios
     
-    def model_exec(self, batch_docs:list[list[str]]) -> list[np.ndarray]:
+    def model_exec(self, batch_docs:list[list[str]]) -> list[list[np.ndarray]]:
         flattened_doc_list = [item for sublist in batch_docs for item in sublist]
         tts_audios = self.run_tts(flattened_doc_list)
         # Reshape the audios to match the original doc_list structure
@@ -100,14 +99,14 @@ class TTSModelWorker(ExecWorker):
             for qid in batch.question_ids[:batch.num_pending]:
                 self.parent.tl.log(70030, qid, 0, batch.num_pending)
                 
-            doc_types = self.tts_model.model_exec(batch.doc_list[:batch.num_pending])
+            audio_lists = self.tts_model.model_exec(batch.doc_list[:batch.num_pending])
             
             for qid in batch.question_ids[:batch.num_pending]:
                 self.parent.tl.log(70031, qid, 0, batch.num_pending)
                 
-            self.parent.add_to_collection(batch,
-                                            doc_types, 
-                                            batch.num_pending)
+            self.parent.collector.add_doc_result(batch,
+                                        audio_lists, 
+                                        batch.num_pending)
             self.pending_batches[self.current_batch].reset()
 
 
@@ -140,13 +139,13 @@ class CollectedResult:
 
 
 class Collector:
-    def __init__(self):
+    def __init__(self, tl: TimestampLogger, flush_qid: str):
         self.collected_results = {}
         self.lock = threading.Lock()
         self.cv = threading.Condition(self.lock)
         self.finished_count = 0
-        self.collector.tl = self.tl
-        self.collector.flush_qid = self.flush_qid
+        self.tl = tl
+        self.flush_qid = flush_qid
 
     def check_collected_result(self, qid):
         '''
@@ -154,6 +153,8 @@ class Collector:
         '''
         if self.collected_results[qid].collect_all():
             self.finished_count += 1
+            # self.collected_results[qid].print_result()
+            
             del self.collected_results[qid]
             self.tl.log(70100, qid, 0, 1)
             if qid == self.flush_qid:
@@ -162,9 +163,9 @@ class Collector:
                 print(f"AGG finished count: {self.finished_count}")
     
 
-    def add_doc_result(self,doc_result_batch: DocResultBatchManager, audio_list: list[np.ndarray]):
+    def add_doc_result(self,doc_result_batch: PendingCheckDataBatcher, audio_list: list[list[np.ndarray]], num_queries):
         with self.cv:
-            for idx, qid in enumerate(doc_result_batch.question_ids):
+            for idx, qid in enumerate(doc_result_batch.question_ids[:num_queries]):
                 
                 if qid not in self.collected_results:
                     self.collected_results[qid] = CollectedResult(qid)
@@ -203,11 +204,11 @@ class AggregateUDL(UserDefinedLogic):
         self.finished_count = 0
         
         self.model_worker = None
-        self.collector = Collector()
-        self.collector.tl = self.tl
-        self.collector.flush_qid = self.flush_qid
+        self.device = self.conf["device"]
+        self.collector = Collector(self.tl, self.conf["flush_qid"])
         self.max_exe_batch_size = int(self.conf.get("max_exe_batch_size", 16))
         self.batch_time_us = int(self.conf.get("batch_time_us", 1000))
+        self.num_pending_buffer = self.conf.get("num_pending_buffer", 10)
         self.flush_qid = self.conf["flush_qid"]
     
 
@@ -222,6 +223,8 @@ class AggregateUDL(UserDefinedLogic):
     def ocdpo_handler(self, **kwargs):
         data = kwargs["blob"]
         key = kwargs["key"]
+        if not self.model_worker:
+            self.start_threads()
         
         if key.find("doc") != -1:
             # If it were doc, then first put it to the TTS execution queue 
@@ -229,7 +232,8 @@ class AggregateUDL(UserDefinedLogic):
             doc_batcher.deserialize(data)
             for qid in doc_batcher.question_ids:
                 self.tl.log(70001, qid, 0, 0)
-            self.model_worker.push_to_pending_batches(doc_batcher.copy())
+            # Data content is copied once when forming batch at add_data
+            self.model_worker.push_to_pending_batches(doc_batcher)
         
         if key.find("check") != -1:
             # text check result

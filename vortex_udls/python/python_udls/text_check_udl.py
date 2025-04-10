@@ -51,9 +51,10 @@ class TextChecker:
         entail_contradiction_logits = logits[:, [0, 2]]  # entailment = index 2
         probs = entail_contradiction_logits.softmax(dim=1)
         true_probs = probs[:, 1] * 100  # entailment probability
-        return true_probs.tolist()
+        true_probs = [int(x) for x in true_probs]
+        return true_probs
     
-    def docs_check(self, doc_list: list[list[str]]) -> list[list[float]]:
+    def docs_check(self, doc_list: list[list[str]]) -> list[list[int]]:
         flattened_doc_list = [item for sublist in doc_list for item in sublist]
         types = self.model_exec(flattened_doc_list)
         # Reshape the types to match the original doc_list structure

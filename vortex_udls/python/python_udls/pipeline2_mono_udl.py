@@ -81,10 +81,10 @@ class MonoSpeechProcess:
         for qid in qids:
             self.parent.tl.log(50031, qid, 0, num_pending)
             
-        # 5. Language detection
+        # 5. Audio synthesis
         for qid in qids:
             self.parent.tl.log(60030, qid, 0, num_pending)
-        audios = self.tts_runner.run_tts(doc_list)
+        audios = self.tts_runner.model_exec(doc_list)
         for qid in qids:
             self.parent.tl.log(60031, qid, 0, num_pending)
             # self.parent.tl.log(70100, qid, 0, num_pending)
@@ -96,6 +96,7 @@ class MonoSpeechProcess:
                 "check_result": check_result[idx],
                 "audios": audios[idx]
             }
+            # print(f"Mono Speech PPL2 UDL: {qids[idx]} docs: {docs} check_result: {check_result[idx]} ")
         for qid in qids:
             if qid == self.parent.flush_id:
                 print(f"Mono Speech PPL2 UDL: {qid} flush_id")
