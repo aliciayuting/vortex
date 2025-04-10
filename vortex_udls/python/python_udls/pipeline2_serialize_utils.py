@@ -20,17 +20,16 @@ class AudioBatcher:
 
     def serialize(self) -> np.ndarray:
         """
-        Serializes the following fields into a contiguous buffer:
-        - Header: 4 bytes for batch_size (uint32).
-        - Metadata: For each audio_data element, store two int64 values (offset and length).
-        - Fixed segments:
-            * question_ids: (batch_size,) int64.
-        - Variable segment:
-            * audio_data: list of np.ndarray float64 with various sizes.
+        Serializes the batch into a contiguous buffer:
+        - Header: 8 bytes for batch_size (int64).
+        - Metadata: batch_size × (offset, length) int64 pairs.
+        - Question IDs: batch_size × int64.
+        - Audio data: concatenated raw float64 arrays.
         """
         assert len(self.audio_data) == len(self.question_ids), "Mismatch in audio and question_ids"
+        batch_size = len(self.audio_data)
 
-        # Step 1: Ensure all audio arrays are float64 and contiguous
+        # Sanitize and standardize input
         sanitized_audio = []
         sanitized_qids = []
         for qid, audio in zip(self.question_ids, self.audio_data):
@@ -49,43 +48,35 @@ class AudioBatcher:
         self.question_ids = sanitized_qids
         batch_size = len(self.audio_data)
 
-        # Step 2: Calculate sizes
-        header_size = np.dtype(np.uint32).itemsize  # 4 bytes
+        # Sizes and layout
+        header_size = np.dtype(np.int64).itemsize  # 8 bytes
         metadata_dtype = np.dtype([("offset", np.int64), ("length", np.int64)])
-        metadata_size = batch_size * metadata_dtype.itemsize  # 16 bytes per item
-        qid_size = batch_size * np.dtype(np.int64).itemsize   # 8 bytes per item
-
+        metadata_size = batch_size * metadata_dtype.itemsize  # 16 * N
+        qid_size = batch_size * np.dtype(np.int64).itemsize   # 8 * N
         fixed_size = header_size + metadata_size + qid_size
+
         variable_data_offset = fixed_size
-
-        # Ensure alignment for float64 audio data (8-byte)
-        assert variable_data_offset % 8 == 0, "Audio data section must be 8-byte aligned"
-
         total_audio_bytes = sum(audio.nbytes for audio in self.audio_data)
-        total_size = variable_data_offset + total_audio_bytes
+        total_size = fixed_size + total_audio_bytes
 
-        # Step 3: Allocate contiguous buffer
+        # Allocate the final buffer
         buffer = np.zeros(total_size, dtype=np.uint8)
-        assert buffer.flags['C_CONTIGUOUS'], "Main buffer is not contiguous"
-        assert buffer.ctypes.data % 8 == 0, "Main buffer is not 8-byte aligned"
+        assert buffer.ctypes.data % 8 == 0, "Buffer not 8-byte aligned"
 
-        # Step 4: Write header
-        buffer[:header_size].view(np.uint32)[0] = batch_size
+        # Header (int64 batch size)
+        buffer[:8] = np.array([batch_size], dtype=np.int64).view(np.uint8)
 
-        # Step 5: Write metadata and question IDs
-        metadata_view = buffer[header_size : header_size + metadata_size].view(metadata_dtype)
-        qid_view = buffer[header_size + metadata_size : fixed_size].view(np.int64)
+        # Metadata view
+        metadata_view = buffer[8 : 8 + metadata_size].view(metadata_dtype)
+        qid_view = buffer[8 + metadata_size : fixed_size].view(np.int64)
         qid_view[:] = self.question_ids
 
-        # Step 6: Write audio arrays
-        write_ptr = variable_data_offset
+        # Audio data segment
+        write_ptr = fixed_size
         for i, audio_array in enumerate(self.audio_data):
             audio_bytes = audio_array.nbytes
-
-            # Alignment and bounds check
-            assert audio_bytes % 8 == 0, f"Audio data at index {i} is not 8-byte aligned"
-            assert write_ptr % 8 == 0, f"Write pointer at index {i} is not 8-byte aligned"
-            assert write_ptr + audio_bytes <= total_size, f"Write exceeds buffer size at index {i}"
+            assert audio_bytes % 8 == 0
+            assert write_ptr % 8 == 0
 
             metadata_view[i] = (write_ptr - variable_data_offset, audio_bytes)
             buffer[write_ptr : write_ptr + audio_bytes] = audio_array.view(np.uint8)
@@ -95,25 +86,22 @@ class AudioBatcher:
         return buffer
 
     def deserialize(self, data: np.ndarray):
-        # copy data
+        """
+        Reconstructs the audio batch from a serialized buffer.
+        """
         self._bytes = data
 
-        header_size = np.dtype(np.uint32).itemsize
+        header_size = np.dtype(np.int64).itemsize  # 8 bytes
         metadata_dtype = np.dtype([("offset", np.int64), ("length", np.int64)])
-        batch_size = np.frombuffer(data[:header_size], dtype=np.uint32)[0]
+        batch_size = np.frombuffer(data[:8], dtype=np.int64)[0]
+
         metadata_size = batch_size * metadata_dtype.itemsize
         qid_size = batch_size * np.dtype(np.int64).itemsize
-
         fixed_size = header_size + metadata_size + qid_size
-        # padding = (16 - (fixed_size % 16)) % 16  
-        variable_data_offset = fixed_size #+ padding
+        variable_data_offset = fixed_size
 
-        metadata_view = np.frombuffer(
-            data[header_size : header_size + metadata_size], dtype=metadata_dtype
-        )
-        qid_view = np.frombuffer(
-            data[header_size + metadata_size : fixed_size], dtype=np.int64
-        )
+        metadata_view = np.frombuffer(data[8 : 8 + metadata_size], dtype=metadata_dtype)
+        qid_view = np.frombuffer(data[8 + metadata_size : fixed_size], dtype=np.int64)
 
         self.question_ids = qid_view.tolist()
         self.audio_data = []
@@ -123,15 +111,14 @@ class AudioBatcher:
             length = metadata_view[i]["length"]
             start = variable_data_offset + offset
             end = start + length
-            audio_bytes = memoryview(data)[start:end]
-            audio_array = np.frombuffer(audio_bytes, dtype=np.float64)
+            audio_array = np.frombuffer(data[start:end], dtype=np.float64)
             self.audio_data.append(audio_array)
 
     def print_info(self):
-        print(f"AudioBatcher: {len(self.audio_data)} audio data")
+        print(f"AudioBatcher: {len(self.audio_data)} audio samples")
         for i, audio in enumerate(self.audio_data):
-            print(f" audio {i}: shape {audio.shape}, dtype {audio.dtype}")
-        print(f" question IDs: {self.question_ids}")
+            print(f"  audio[{i}]: shape={audio.shape}, dtype={audio.dtype}, size={audio.size}, bytes={audio.nbytes}")
+        print(f"  question IDs: {self.question_ids}")
 
 
 class PendingAudioRecDataBatcher:
