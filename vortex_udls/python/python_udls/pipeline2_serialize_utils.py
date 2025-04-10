@@ -28,49 +28,57 @@ class AudioBatcher:
         - Variable segment:
             * audio_data: list of np.ndarray float64 with various sizes.
         """
+        # Sanitize and filter
+        sanitized_audio = []
+        sanitized_qids = []
+        for qid, audio in zip(self.question_ids, self.audio_data):
+            if not isinstance(audio, np.ndarray):
+                continue
+            if audio.dtype != np.float64:
+                audio = audio.astype(np.float64)
+            audio = np.ascontiguousarray(audio)
+            if audio.nbytes <= 0:
+                continue
+            sanitized_audio.append(audio)
+            sanitized_qids.append(qid)
+
+        self.audio_data = sanitized_audio
+        self.question_ids = sanitized_qids
         batch_size = len(self.audio_data)
-        assert batch_size == len(self.question_ids)
+        assert batch_size == len(self.question_ids), "Mismatch in batch size and question_ids"
 
-        header_size = np.dtype(np.uint32).itemsize  # 4 bytes
+        # Sizes
+        header_size = np.dtype(np.uint32).itemsize
         metadata_dtype = np.dtype([("offset", np.int64), ("length", np.int64)])
-        metadata_size = batch_size * metadata_dtype.itemsize  # 16 bytes per item
-        qid_size = batch_size * np.dtype(np.int64).itemsize       # 8 bytes per item
-
-        # Fixed segment size before audio data.
+        metadata_size = batch_size * metadata_dtype.itemsize
+        qid_size = batch_size * np.dtype(np.int64).itemsize
         fixed_size = header_size + metadata_size + qid_size
-        # Add padding so that the variable segment is aligned to 8 bytes.
-        # padding = (16 - (fixed_size % 16)) % 16  
-        variable_data_offset = fixed_size #+ padding
+        variable_data_offset = fixed_size
 
-        total_audio_bytes = 0
-        contiguous_audio = []
-        # Ensure all audio arrays are contiguous.
-        for audio in self.audio_data:
-            total_audio_bytes += audio.nbytes
-
+        # Allocate space for audio data
+        total_audio_bytes = sum(audio.nbytes for audio in self.audio_data)
         total_size = variable_data_offset + total_audio_bytes
         buffer = np.zeros(total_size, dtype=np.uint8)
 
-        # Write header.
+        # Write header
         buffer[:header_size].view(np.uint32)[0] = batch_size
-        # Write metadata.
+
+        # Metadata and qids
         metadata_view = buffer[header_size : header_size + metadata_size].view(metadata_dtype)
-        # Write question IDs.
         qid_view = buffer[header_size + metadata_size : fixed_size].view(np.int64)
         qid_view[:] = self.question_ids
-        # # Optionally, zero the padding bytes.
-        # if padding:
-        #     buffer[fixed_size:variable_data_offset] = 0
-        # Write variable segment: audio_data.
+
+        # Write audio data
         write_ptr = variable_data_offset
         for i, audio_array in enumerate(self.audio_data):
             audio_bytes = audio_array.nbytes
-            # Record offset relative to the start of the variable segment.
+            if audio_bytes <= 0 or write_ptr + audio_bytes > total_size:
+                raise ValueError(f"Invalid audio array at index {i}: size={audio_bytes}")
             metadata_view[i] = (write_ptr - variable_data_offset, audio_bytes)
-            # Obtain a writable view into the target slice.
-            dest = buffer[write_ptr : write_ptr + audio_bytes].view(audio_array.dtype)
+            dest = buffer[write_ptr : write_ptr + audio_bytes].view(np.float64)
             dest[:] = audio_array
             write_ptr += audio_bytes
+
         self._bytes = buffer
         return buffer
 
