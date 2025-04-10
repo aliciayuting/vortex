@@ -28,7 +28,9 @@ class AudioBatcher:
         - Variable segment:
             * audio_data: list of np.ndarray float64 with various sizes.
         """
-        # Sanitize and filter
+        assert len(self.audio_data) == len(self.question_ids), "Mismatch in audio and question_ids"
+
+        # Step 1: Ensure all audio arrays are float64 and contiguous
         sanitized_audio = []
         sanitized_qids = []
         for qid, audio in zip(self.question_ids, self.audio_data):
@@ -36,8 +38,9 @@ class AudioBatcher:
                 continue
             if audio.dtype != np.float64:
                 audio = audio.astype(np.float64)
-            audio = np.ascontiguousarray(audio)
-            if audio.nbytes <= 0:
+            if not audio.flags['C_CONTIGUOUS']:
+                audio = np.ascontiguousarray(audio)
+            if audio.nbytes == 0:
                 continue
             sanitized_audio.append(audio)
             sanitized_qids.append(qid)
@@ -45,38 +48,47 @@ class AudioBatcher:
         self.audio_data = sanitized_audio
         self.question_ids = sanitized_qids
         batch_size = len(self.audio_data)
-        assert batch_size == len(self.question_ids), "Mismatch in batch size and question_ids"
 
-        # Sizes
-        header_size = np.dtype(np.uint32).itemsize
+        # Step 2: Calculate sizes
+        header_size = np.dtype(np.uint32).itemsize  # 4 bytes
         metadata_dtype = np.dtype([("offset", np.int64), ("length", np.int64)])
-        metadata_size = batch_size * metadata_dtype.itemsize
-        qid_size = batch_size * np.dtype(np.int64).itemsize
+        metadata_size = batch_size * metadata_dtype.itemsize  # 16 bytes per item
+        qid_size = batch_size * np.dtype(np.int64).itemsize   # 8 bytes per item
+
         fixed_size = header_size + metadata_size + qid_size
         variable_data_offset = fixed_size
 
-        # Allocate space for audio data
+        # Ensure alignment for float64 audio data (8-byte)
+        assert variable_data_offset % 8 == 0, "Audio data section must be 8-byte aligned"
+
         total_audio_bytes = sum(audio.nbytes for audio in self.audio_data)
         total_size = variable_data_offset + total_audio_bytes
-        buffer = np.zeros(total_size, dtype=np.uint8)
 
-        # Write header
+        # Step 3: Allocate contiguous buffer
+        buffer = np.zeros(total_size, dtype=np.uint8)
+        assert buffer.flags['C_CONTIGUOUS'], "Main buffer is not contiguous"
+        assert buffer.ctypes.data % 8 == 0, "Main buffer is not 8-byte aligned"
+
+        # Step 4: Write header
         buffer[:header_size].view(np.uint32)[0] = batch_size
 
-        # Metadata and qids
+        # Step 5: Write metadata and question IDs
         metadata_view = buffer[header_size : header_size + metadata_size].view(metadata_dtype)
         qid_view = buffer[header_size + metadata_size : fixed_size].view(np.int64)
         qid_view[:] = self.question_ids
 
-        # Write audio data
+        # Step 6: Write audio arrays
         write_ptr = variable_data_offset
         for i, audio_array in enumerate(self.audio_data):
             audio_bytes = audio_array.nbytes
-            if audio_bytes <= 0 or write_ptr + audio_bytes > total_size:
-                raise ValueError(f"Invalid audio array at index {i}: size={audio_bytes}")
+
+            # Alignment and bounds check
+            assert audio_bytes % 8 == 0, f"Audio data at index {i} is not 8-byte aligned"
+            assert write_ptr % 8 == 0, f"Write pointer at index {i} is not 8-byte aligned"
+            assert write_ptr + audio_bytes <= total_size, f"Write exceeds buffer size at index {i}"
+
             metadata_view[i] = (write_ptr - variable_data_offset, audio_bytes)
-            dest = buffer[write_ptr : write_ptr + audio_bytes].view(np.float64)
-            dest[:] = audio_array
+            buffer[write_ptr : write_ptr + audio_bytes] = audio_array.view(np.uint8)
             write_ptr += audio_bytes
 
         self._bytes = buffer
