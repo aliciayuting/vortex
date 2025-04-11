@@ -65,6 +65,18 @@ class TextChecker:
             reshaped_types.append(types[start:end])
             start = end
         return reshaped_types
+    
+    def doc_check_with_batch_size(self, doc_list: list[list[str]], batch_size: int) -> list[list[int]]:
+        '''
+        Ablation study: dynamic monolithic pipeline
+        '''
+        # Split the doc_list into smaller batches
+        batches = [doc_list[i:i + batch_size] for i in range(0, len(doc_list), batch_size)]
+        all_types = []
+        for batch in batches:
+            types = self.docs_check(batch)
+            all_types.extend(types)
+        return all_types
 
 
 

@@ -57,6 +57,21 @@ class TTSRunner:
             start = end
         return reshaped_audios
 
+    def model_exec_with_batch_size(self, batch_docs:list[list[str]], batch_size = 1) -> list[list[np.ndarray]]:
+        flattened_doc_list = [item for sublist in batch_docs for item in sublist]
+        tts_audios = []
+        for i in range(0, len(flattened_doc_list), batch_size):
+            batch = flattened_doc_list[i:i + batch_size]
+            tts_audios.extend(self.run_tts(batch))
+        # Reshape the audios to match the original doc_list structure
+        reshaped_audios = []
+        start = 0
+        for sublist in batch_docs:
+            end = start + len(sublist)
+            reshaped_audios.append(tts_audios[start:end])
+            start = end
+        return reshaped_audios
+
     
 class TTSModelWorker(ExecWorker):
     '''

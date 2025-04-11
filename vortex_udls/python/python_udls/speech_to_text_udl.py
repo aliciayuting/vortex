@@ -64,59 +64,14 @@ class AudioRecognition:
             text_list.append(rich_transcription_postprocess(res[0][idx]["text"]))
         return text_list
 
-    # def exec_model(self, batch_audios):
-    #     if self.model is None:
-    #         self.load_model()
-
-    #     # Step 1: Separate audios by length, while preserving their original indices
-    #     short_audios = []
-    #     long_audio_tasks = []
-    #     for idx, audio in enumerate(batch_audios):
-    #         if len(audio) > 200000:
-    #             long_audio_tasks.append((idx, audio))
-    #         else:
-    #             short_audios.append((idx, audio))
-
-    #     # Step 2: Prepare result list
-    #     text_list = [None] * len(batch_audios)
-
-    #     # Step 3: Run batched inference on short audios
-    #     if short_audios:
-    #         indices, short_audio_data = zip(*short_audios)
-    #         speech, speech_lengths = extract_fbank(
-    #             list(short_audio_data), 
-    #             data_type=self.kwargs.get("data_type", "sound"), 
-    #             frontend=self.frontend
-    #         )
-    #         res = self.model.inference(
-    #             data_in=speech,
-    #             data_lengths=speech_lengths,
-    #             language=self.language,
-    #             use_itn=False,
-    #             ban_emo_unk=True,
-    #             **self.kwargs,
-    #         )
-    #         for i, idx in enumerate(indices):
-    #             text_list[idx] = rich_transcription_postprocess(res[0][i]["text"])
-
-    #     # Step 4: Run individual inference on long audios
-    #     for idx, audio in long_audio_tasks:
-    #         speech, speech_lengths = extract_fbank(
-    #             [audio], 
-    #             data_type=self.kwargs.get("data_type", "sound"), 
-    #             frontend=self.frontend
-    #         )
-    #         res = self.model.inference(
-    #             data_in=speech,
-    #             data_lengths=speech_lengths,
-    #             language=self.language,
-    #             use_itn=False,
-    #             ban_emo_unk=True,
-    #             **self.kwargs,
-    #         )
-    #         text_list[idx] = rich_transcription_postprocess(res[0][0]["text"])
-
-    #     return text_list
+    def exec_model_with_batch_size(self, batch_audios, batch_size=4):
+        batched_exec_audios = []
+        for i in range(0, len(batch_audios), batch_size):
+            batched_exec_audios.append(batch_audios[i:i + batch_size])
+        text_list = []
+        for batch in batched_exec_audios:
+            text_list.extend(self.exec_model(batch))
+        return text_list
 
 
 class SpeechTextWorker(ExecWorker):
