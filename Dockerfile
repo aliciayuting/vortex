@@ -32,7 +32,6 @@ ENV DERECHO_INSTALL_PREFIX=${OPT_HOME}
 ENV VORTEX_INSTALL_PREFIX=${OPT_HOME}
 ENV FAISS_INSTALL_PREFIX=${OPT_HOME}
 ENV CURL_INSTALL_PREFIX=${OPT_HOME}/
-ENV HNSWLIB_INSTALL_PREFIX=${OPT_HOME}
 ENV SPDLOG_PREFIX=${OPT_HOME}
 ENV CMAKE_PREFIX_PATH=${OPT_HOME}
 ENV C_INCLUDE_PATH=${OPT_HOME}/include
@@ -84,7 +83,6 @@ RUN chmod +x -R ./vortex/scripts
 RUN ./vortex/scripts/install-curl.sh
 # install-faiss might fail because of non-compatible GPU arch
 RUN echo "n" | ./vortex/scripts/install-faiss.sh
-RUN echo "n" | ./vortex/scripts/install-hnswlib.sh
 
 # bind mount host vortex repo
 RUN rm -rf vortex

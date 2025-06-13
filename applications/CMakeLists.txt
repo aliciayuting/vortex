@@ -1,5 +1,3 @@
-
-
 # Build Python UDLs
 find_package(Python3 3.10.0 QUIET COMPONENTS Interpreter Development Development.Module Development.Embed NumPy)
 # find_package(QUIET COMPONENTS Interpreter Development Development.Module Development.Embed NumPy)
